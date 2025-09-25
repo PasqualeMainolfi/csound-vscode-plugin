@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug @csound/browser AudioWorklet Loading</title>
+</head>
+<body>
+    <h1>Debug @csound/browser AudioWorklet Loading</h1>
+    <button id="testBtn">Test Csound Initialization</button>
+    <div id="output"></div>
+
+    <script type="module">
+        import { Csound } from './node_modules/@csound/browser/dist/csound.js';
+        
+        const output = document.getElementById('output');
+        const log = (msg) => {
+            console.log(msg);
+            output.innerHTML += `<p>${msg}</p>`;
+        };
+
+        // Intercept addModule calls to see what URL is being loaded
+        const originalAddModule = AudioContext.prototype.audioWorklet.addModule;
+        AudioContext.prototype.audioWorklet.addModule = function(url, options) {
+            log(`🔍 AudioWorklet trying to load: ${url}`);
+            log(`🔍 URL type: ${typeof url}`);
+            log(`🔍 URL starts with blob:: ${url.toString().startsWith('blob:')}`);
+            log(`🔍 URL starts with data:: ${url.toString().startsWith('data:')}`);
+            return originalAddModule.call(this, url, options);
+        };
+
+        document.getElementById('testBtn').addEventListener('click', async () => {
+            try {
+                log('🚀 Starting Csound initialization...');
+                
+                const audioContext = new AudioContext();
+                log(`📱 AudioContext created: ${audioContext.state}`);
+                
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                    log(`📱 AudioContext resumed: ${audioContext.state}`);
+                }
+
+                log('🎵 Creating Csound instance...');
+                const csound = await Csound({
+                    audioContext: audioContext,
+                    useSPN: false  // Force AudioWorklet
+                });
+                
+                log('✅ Csound created successfully!');
+                
+            } catch (error) {
+                log(`❌ Error: ${error}`);
+                log(`❌ Error stack: ${error.stack}`);
+            }
+        });
+    </script>
+</body>
+</html>
