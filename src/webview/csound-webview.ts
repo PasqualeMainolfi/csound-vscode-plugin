@@ -13,8 +13,10 @@ declare const window: any;
 class CsoundWebView {
     private vscode: any;
     private csound?: CsoundObj;
+    private audioContext?: any;
     private isInitialized = false;
-    private isPlaying = false;
+    private isAudioRunning = false;
+    private isCsoundPlaying = false;
 
     constructor() {
         this.vscode = acquireVsCodeApi();
@@ -25,20 +27,32 @@ class CsoundWebView {
 
     private async loadCsound() {
         try {
-            this.updateStatus('Csound module loaded, ready to initialize');
-            this.enableInitButton();
+            this.updateAudioStatus('Not Started');
+            this.updatePauseResumeButton('Start');
+            this.setAudioPauseButtonEnabled(true);
+            this.setCsoundControlsEnabled(false);
+            this.logOutput('Csound module loaded, ready to start audio context');
         } catch (error) {
-            this.updateStatus('Failed to load Csound module');
+            this.updateAudioStatus('Failed to load');
             this.logError(`Failed to load @csound/browser: ${error}`);
         }
     }
 
     private setupUI() {
-        const initButton = document.getElementById('initButton') as any;
-        const stopButton = document.getElementById('stopButton') as any;
+        const pauseResumeButton = document.getElementById('pauseResumeButton') as any;
+        const csoundPauseButton = document.getElementById('csoundPauseButton') as any;
+        const csoundStopButton = document.getElementById('csoundStopButton') as any;
 
-        initButton?.addEventListener('click', () => this.initializeCsound());
-        stopButton?.addEventListener('click', () => this.stopCsound());
+        pauseResumeButton?.addEventListener('click', async () => {
+            if (!this.isInitialized) {
+                await this.initializeCsound();
+                return;
+            }
+            await this.toggleAudioContext();
+        });
+
+        csoundPauseButton?.addEventListener('click', () => this.toggleCsoundPause());
+        csoundStopButton?.addEventListener('click', () => this.sendCsoundStopEvent());
     }
 
     private setupMessageListener() {
@@ -67,63 +81,38 @@ class CsoundWebView {
             return;
         }
 
+        this.setAudioPauseButtonEnabled(false);
+
         try {
-            this.updateStatus('Initializing Csound...');
-            this.disableInitButton();
+            this.updateAudioStatus('Starting...');
 
-            // Create AudioContext
-            this.logOutput('Creating AudioContext...');
-            const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-            
-            if (audioContext.state === 'suspended') {
-                this.logOutput('Resuming suspended AudioContext...');
-                await audioContext.resume();
+            // Lazily create shared AudioContext
+            if (!this.audioContext) {
+                this.logOutput('Creating shared AudioContext...');
+                const audioCtxCtor = window.AudioContext || (window as any).webkitAudioContext;
+                this.audioContext = new audioCtxCtor({ sampleRate: 44100 });
             }
-            this.logOutput(`AudioContext state: ${audioContext.state}`);
 
-            // Intercept addModule calls to debug what URL @csound/browser is trying to load
-            const originalAddModule = audioContext.audioWorklet.addModule.bind(audioContext.audioWorklet);
-            audioContext.audioWorklet.addModule = async (url: string | URL, options?: any) => {
-                this.logOutput(`🔍 @csound/browser trying to load worklet from: ${url}`);
-                this.logOutput(`🔍 URL type: ${typeof url}`);
-                
-                if (typeof url === 'string') {
-                    this.logOutput(`🔍 URL starts with blob:: ${url.startsWith('blob:')}`);
-                    this.logOutput(`🔍 URL starts with data:: ${url.startsWith('data:')}`);
-                    this.logOutput(`🔍 URL starts with http:: ${url.startsWith('http')}`);
-                    this.logOutput(`🔍 First 100 chars: ${url.substring(0, 100)}`);
-                }
-                
-                try {
-                    const result = await originalAddModule(url, options);
-                    this.logOutput(`✅ AudioWorklet module loaded successfully`);
-                    return result;
-                } catch (error) {
-                    this.logOutput(`❌ AudioWorklet module loading failed: ${error}`);
-                    if (error instanceof Error) {
-                        this.logOutput(`❌ Error name: ${error.name}`);
-                        this.logOutput(`❌ Error message: ${error.message}`);
-                        if (error.name === 'AbortError') {
-                            this.logOutput('💡 This is likely a CSP restriction in VSCode WebView');
-                        }
-                    }
-                    throw error;
-                }
-            };
+            if (this.audioContext.state === 'suspended') {
+                this.logOutput('Resuming suspended AudioContext...');
+                await this.audioContext.resume();
+            }
+
+            this.logOutput(`AudioContext state: ${this.audioContext.state}`);
 
             // Use AudioWorklet only (no ScriptProcessorNode fallback)
-            this.logOutput('Initializing Csound with AudioWorklet...');
+            this.logOutput('Initializing Csound with shared AudioContext...');
             
-            // Create Csound instance with AudioWorklet
+            // Create Csound instance reusing shared AudioContext
             this.csound = await Csound({
-                audioContext: audioContext,
+                audioContext: this.audioContext,
                 inputChannelCount: 2,
                 outputChannelCount: 2,
                 autoConnect: true,
                 withPlugins: [],
-                useWorker: false,      // Single-threaded
-                useSAB: false,         // No SharedArrayBuffer
-                useSPN: false          // Force AudioWorklet (no ScriptProcessorNode)
+                useWorker: false,
+                useSAB: false,
+                useSPN: false
             });
             
             this.logOutput('✅ AudioWorklet initialization successful!');
@@ -132,26 +121,45 @@ class CsoundWebView {
                 throw new Error('Failed to create Csound instance');
             }
 
+            this.logOutput("Csound Sample Rate: " + await this.csound.getSr());
+            this.logOutput("AudioContext Sample Rate: " + this.audioContext.sampleRate);
+
             // Set up event listeners
             this.csound.on('message', (message: string) => {
                 this.logOutput(message);
             });
 
-            this.isInitialized = true;
-            this.updateStatus('Csound initialized and ready');
-            this.updateEngineStatus('Ready');
-            
-            // Get and display Csound info
-            const sr = await this.csound.getSr();
-            const nchnls = await this.csound.getNchnls();
-            this.updateSampleRate(sr.toString());
-            this.updateChannels(nchnls.toString());
+            this.csound.on('play', () => {
+                this.logOutput('Csound event: play');
+                this.isCsoundPlaying = true;
+                this.updateEngineStatus('Playing');
+                this.updateCsoundPauseButton('Pause');
+                this.setCsoundControlsEnabled(true);
+            });
 
-            // Enable stop button
-            const stopButton = document.getElementById('stopButton') as any;
-            if (stopButton) {
-                stopButton.disabled = false;
-            }
+            this.csound.on('pause', () => {
+                this.logOutput('Csound event: pause');
+                this.isCsoundPlaying = false;
+                this.updateEngineStatus('Paused');
+                this.updateCsoundPauseButton('Play');
+            });
+
+            this.csound.on('stop', () => {
+                this.logOutput('Csound event: stop');
+                this.isCsoundPlaying = false;
+                this.updateEngineStatus('Stopped');
+                this.updateCsoundPauseButton('Play');
+                this.setCsoundControlsEnabled(false);
+            });
+
+            this.isInitialized = true;
+            this.isAudioRunning = true;
+            this.updateAudioStatus('Running');
+            this.updateEngineStatus('Ready');
+
+            this.setAudioPauseButtonEnabled(true);
+            this.updatePauseResumeButton('Pause');
+            this.setCsoundControlsEnabled(false);
 
             // Notify extension that Csound is ready
             this.vscode.postMessage({
@@ -159,9 +167,10 @@ class CsoundWebView {
             });
 
         } catch (error) {
-            this.updateStatus('Failed to initialize Csound');
+            this.updateAudioStatus('Failed');
             this.logError(`Initialization error: ${error}`);
-            this.enableInitButton();
+            this.updatePauseResumeButton('Start');
+            this.setAudioPauseButtonEnabled(true);
         }
     }
 
@@ -181,9 +190,75 @@ class CsoundWebView {
                 this.logOutput('No project files received - projectFiles is undefined/null');
             }
             
+            // Notify extension to focus output channel
+            this.vscode.postMessage({
+                type: 'startRender',
+                filename: filename
+            });
+            
             // Stop any current performance
             await this.csound.stop();
+            
+            // CRITICAL FIX #1: Reset clears the Csound state but NOT the filesystem
+            // We need to destroy and recreate Csound to get a fresh filesystem
+            this.logOutput('Destroying and recreating Csound for fresh filesystem...');
             await this.csound.reset();
+            await this.csound.destroy();
+
+            if (!this.audioContext) {
+                throw new Error('Shared AudioContext not initialized');
+            }
+
+            if (this.audioContext.state === 'suspended') {
+                this.logOutput('Resuming suspended AudioContext before recreation...');
+                await this.audioContext.resume();
+            }
+
+            // Recreate Csound using shared AudioContext
+            this.csound = await Csound({
+                audioContext: this.audioContext,
+                inputChannelCount: 2,
+                outputChannelCount: 2,
+                autoConnect: true,
+                withPlugins: [],
+                useWorker: false,
+                useSAB: false,
+                useSPN: false
+            });
+            
+            if (!this.csound) {
+                throw new Error('Failed to recreate Csound instance');
+            }
+            
+            this.csound.on('message', (message: string) => {
+                this.logOutput(message);
+            });
+
+            // Set up state event listeners for recreated instance
+            this.csound.on('play', () => {
+                this.logOutput('Csound event: play');
+                this.isCsoundPlaying = true;
+                this.updateEngineStatus('Playing');
+                this.updateCsoundPauseButton('Pause');
+                this.setCsoundControlsEnabled(true);
+            });
+
+            this.csound.on('pause', () => {
+                this.logOutput('Csound event: pause');
+                this.isCsoundPlaying = false;
+                this.updateEngineStatus('Paused');
+                this.updateCsoundPauseButton('Play');
+            });
+
+            this.csound.on('stop', () => {
+                this.logOutput('Csound event: stop');
+                this.isCsoundPlaying = false;
+                this.updateEngineStatus('Stopped');
+                this.updateCsoundPauseButton('Play');
+                this.setCsoundControlsEnabled(false);
+            });
+            
+            this.logOutput(`Csound recreated with fresh filesystem`);
             
             // Step 1: Sync ALL project files to Csound's filesystem first
             if (projectFiles && Object.keys(projectFiles).length > 0) {
@@ -194,19 +269,27 @@ class CsoundWebView {
             }
             
             // Step 2: Write the main CSD file to filesystem
+            // Ensure filename has absolute path (starts with /)
+            const absolutePath = filename.startsWith('/') ? filename : `/${filename}`;
+            
             const encoder = new (window as any).TextEncoder();
             const csdData = encoder.encode(csdContent);
-            await this.csound.fs.writeFile(filename, csdData);
-            this.logOutput(`Written ${filename} to Csound filesystem`);
+            await this.csound.fs.writeFile(absolutePath, csdData);
+            this.logOutput(`Written ${absolutePath} to Csound filesystem`);
+
             
             // Step 3: Call csound.compileCsd with absolute path
-            const absolutePath = filename.startsWith('/') ? filename : `/${filename}`;
             this.logOutput(`Calling csound.compileCsd("${absolutePath}", 0)...`);
             const result = await this.csound.compileCSD(absolutePath, 0);
             if (result !== 0) {
                 this.logError(`Failed to compile CSD: ${result}`);
-                return;
+                return
             }
+
+
+            // this.logOutput("TESTING")
+            this.logOutput("B) Csound Sample Rate: " + await this.csound.getSr());
+            this.logOutput("B) AudioContext Sample Rate: " + this.audioContext.sampleRate);
 
             // Start performance
             const startResult = await this.csound.start();
@@ -215,12 +298,16 @@ class CsoundWebView {
                 return;
             }
 
-            this.updateEngineStatus('Playing');
+            // State will be updated by 'play' event listener
             this.logOutput('CSD playback started');
-
+            await this.csound.resume();
         } catch (error) {
             this.logError(`Error playing CSD: ${error instanceof Error ? error.message : JSON.stringify(error)}`);
             console.error('Full error object:', error);
+            this.isCsoundPlaying = false;
+            this.updateEngineStatus('Ready');
+            this.updateCsoundPauseButton('Play');
+            this.setCsoundControlsEnabled(false);
         }
     }
 
@@ -265,7 +352,7 @@ class CsoundWebView {
     }
 
     private async stopCsound() {
-        if (!this.csound) {
+        if (!this.csound || !this.isInitialized) {
             this.logError('Csound not initialized');
             return;
         }
@@ -273,7 +360,7 @@ class CsoundWebView {
         try {
             this.logOutput('Stopping Csound...');
             await this.csound.stop();
-            this.updateEngineStatus('Stopped');
+            // State will be updated by 'stop' event listener
             this.logOutput('Csound stopped');
         } catch (error) {
             this.logError(`Error stopping Csound: ${error instanceof Error ? error.message : JSON.stringify(error)}`);
@@ -403,12 +490,6 @@ class CsoundWebView {
         }
     }
 
-    private updateStatus(status: string) {
-        const element = document.getElementById('status');
-        if (element) {
-            element.textContent = status;
-        }
-    }
 
     private updateEngineStatus(status: string) {
         const element = document.getElementById('engineStatus');
@@ -431,40 +512,123 @@ class CsoundWebView {
         }
     }
 
-    private enableInitButton() {
-        const button = document.getElementById('initButton') as any;
-        if (button) {
-            button.disabled = false;
+    private async toggleAudioContext() {
+        if (!this.audioContext) {
+            return;
+        }
+
+        this.setAudioPauseButtonEnabled(false);
+
+        try {
+            if (this.audioContext.state === 'running') {
+                await this.audioContext.suspend();
+                this.isAudioRunning = false;
+                this.updateAudioStatus('Suspended');
+                this.updatePauseResumeButton('Resume');
+                this.logOutput('AudioContext suspended');
+            } else if (this.audioContext.state === 'suspended') {
+                await this.audioContext.resume();
+                this.isAudioRunning = true;
+                this.updateAudioStatus('Running');
+                this.updatePauseResumeButton('Pause');
+                this.logOutput('AudioContext resumed');
+            }
+        } catch (error) {
+            this.logError(`Error toggling AudioContext: ${error}`);
+        } finally {
+            this.setAudioPauseButtonEnabled(true);
         }
     }
 
-    private disableInitButton() {
-        const button = document.getElementById('initButton') as any;
+    private updatePauseResumeButton(text: string) {
+        const button = document.getElementById('pauseResumeButton') as any;
         if (button) {
-            button.disabled = true;
+            button.textContent = text;
+        }
+    }
+
+    private setAudioPauseButtonEnabled(enabled: boolean) {
+        const button = document.getElementById('pauseResumeButton') as any;
+        if (button) {
+            button.disabled = !enabled;
+        }
+    }
+
+    private updateCsoundPauseButton(text: string) {
+        const button = document.getElementById('csoundPauseButton') as any;
+        if (button) {
+            button.textContent = text;
+        }
+    }
+
+    private setCsoundControlsEnabled(enabled: boolean) {
+        const pauseButton = document.getElementById('csoundPauseButton') as any;
+        const stopButton = document.getElementById('csoundStopButton') as any;
+        if (pauseButton) {
+            pauseButton.disabled = !enabled;
+        }
+        if (stopButton) {
+            stopButton.disabled = !enabled;
+        }
+    }
+
+    private updateAudioStatus(status: string) {
+        const element = document.getElementById('audioStatus');
+        if (element) {
+            element.textContent = status;
+        }
+    }
+
+    private async toggleCsoundPause() {
+        if (!this.csound || !this.isInitialized) {
+            this.logError('Csound not initialized');
+            return;
+        }
+
+        try {
+            if (this.isCsoundPlaying) {
+                await this.csound.pause();
+                // State will be updated by 'pause' event listener
+                this.logOutput('Csound paused');
+            } else {
+                await this.csound.resume();
+                // State will be updated by 'play' event listener
+                this.logOutput('Csound resumed');
+            }
+        } catch (error) {
+            this.logError(`Error toggling Csound: ${error instanceof Error ? error.message : JSON.stringify(error)}`);
+        }
+    }
+
+    private async sendCsoundStopEvent() {
+        if (!this.csound || !this.isInitialized) {
+            this.logError('Csound not initialized');
+            return;
+        }
+
+        try {
+            await this.csound.inputMessage('e 0 0');
+            this.logOutput('Sent "e 0 0" to stop Csound');
+            // State will be updated by 'stop' event listener
+        } catch (error) {
+            this.logError(`Error sending stop event: ${error instanceof Error ? error.message : JSON.stringify(error)}`);
         }
     }
 
     private logOutput(message: string) {
-        const console = document.getElementById('console');
-        if (console) {
-            const line = document.createElement('div');
-            line.className = 'console-line';
-            line.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
-            console.appendChild(line);
-            console.scrollTop = console.scrollHeight;
-        }
+        // Send output to VSCode output panel
+        this.vscode.postMessage({
+            type: 'csoundOutput',
+            message: message
+        });
     }
 
     private logError(message: string) {
-        const console = document.getElementById('console');
-        if (console) {
-            const line = document.createElement('div');
-            line.className = 'console-line error';
-            line.textContent = `${new Date().toLocaleTimeString()}: ERROR: ${message}`;
-            console.appendChild(line);
-            console.scrollTop = console.scrollHeight;
-        }
+        // Send error to VSCode output panel
+        this.vscode.postMessage({
+            type: 'csoundError',
+            message: message
+        });
     }
 }
 

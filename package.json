@@ -210,7 +210,7 @@
         "webpack-cli": "^4.10.0"
     },
     "dependencies": {
-        "@csound/browser": "^7.0.0-beta7"
+        "@csound/browser": "^7.0.0-beta11"
     },
     "repository": {
         "type": "git",

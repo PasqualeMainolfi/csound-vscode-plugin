@@ -7,8 +7,11 @@ export class CsoundWebViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _csoundReady = false;
     private _messageQueue: any[] = [];
+    private _outputChannel: vscode.OutputChannel;
 
-    constructor(private readonly _extensionUri: vscode.Uri) {}
+    constructor(private readonly _extensionUri: vscode.Uri) {
+        this._outputChannel = vscode.window.createOutputChannel('Csound');
+    }
 
     public resolveWebviewView(
         webviewView: vscode.WebviewView,
@@ -35,15 +38,22 @@ export class CsoundWebViewProvider implements vscode.WebviewViewProvider {
                         this._csoundReady = true;
                         this._processMessageQueue();
                         break;
+                    case 'startRender':
+                        // Show and focus the output channel when rendering starts
+                        this._outputChannel.show(true);
+                        this._outputChannel.appendLine('');
+                        this._outputChannel.appendLine(`🎵 Starting render: ${message.filename}`);
+                        this._outputChannel.appendLine('='.repeat(60));
+                        break;
                     case 'csoundStatus':
                         vscode.window.showInformationMessage(`Csound: ${message.message}`);
                         break;
                     case 'csoundError':
-                        vscode.window.showErrorMessage(`Csound Error: ${message.message}`);
+                        this._outputChannel.appendLine(`❌ ERROR: ${message.message}`);
+                        this._outputChannel.show(true);
                         break;
                     case 'csoundOutput':
-                        // Could be used to show Csound output in a dedicated output channel
-                        console.log('Csound Output:', message.message);
+                        this._outputChannel.appendLine(message.message);
                         break;
                 }
             },
@@ -106,6 +116,11 @@ export class CsoundWebViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    public dispose() {
+        // Clean up output channel
+        this._outputChannel.dispose();
+    }
+
     private _processMessageQueue() {
         while (this._messageQueue.length > 0 && this._view) {
             const message = this._messageQueue.shift();
@@ -129,44 +144,97 @@ export class CsoundWebViewProvider implements vscode.WebviewViewProvider {
             <html lang="en">
             <head>
                 <meta charset="UTF-8">
-                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}' 'wasm-unsafe-eval' 'unsafe-inline' data: blob:; worker-src 'self' data: blob: 'unsafe-inline'; connect-src data: blob:; child-src data: blob:;">
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval' 'unsafe-inline' data: blob:; worker-src 'self' data: blob: 'unsafe-inline'; connect-src data: blob:; child-src data: blob:;">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <link href="${styleResetUri}" rel="stylesheet">
                 <link href="${styleVSCodeUri}" rel="stylesheet">
                 <link href="${styleMainUri}" rel="stylesheet">
                 <title>Csound WebAudio</title>
+                <style>
+                    body {
+                        margin: 0;
+                        padding: 0;
+                        overflow: hidden;
+                    }
+                    .control-container {
+                        position: fixed;
+                        top: 0;
+                        left: 0;
+                        right: 0;
+                        display: flex;
+                        flex-direction: column;
+                        border-bottom: 1px solid var(--vscode-panel-border);
+                        background-color: var(--vscode-editor-background);
+                        z-index: 1000;
+                    }
+                    .control-row {
+                        display: grid;
+                        grid-template-columns: auto auto 1fr;
+                        align-items: center;
+                        padding: 6px 12px;
+                        gap: 8px;
+                        border-bottom: 1px solid var(--vscode-panel-border);
+                    }
+                    .control-row:last-child {
+                        border-bottom: none;
+                    }
+                    .control-label {
+                        font-size: 12px;
+                        color: var(--vscode-descriptionForeground);
+                    }
+                    .control-row button {
+                        font-size: 11px;
+                        padding: 2px 12px;
+                        border: none;
+                        border-radius: 2px;
+                        cursor: pointer;
+                        background-color: var(--vscode-button-background);
+                        color: var(--vscode-button-foreground);
+                    }
+                    .control-row button + button {
+                        margin-left: 6px;
+                    }
+                    .control-row button:hover {
+                        background-color: var(--vscode-button-hoverBackground);
+                    }
+                    .control-row button:disabled {
+                        opacity: 0.5;
+                        cursor: not-allowed;
+                    }
+                    .status-text {
+                        font-size: 12px;
+                        color: var(--vscode-foreground);
+                        justify-self: end;
+                    }
+                    .content {
+                        margin-top: 74px;
+                        padding: 16px;
+                        height: calc(100vh - 74px);
+                        overflow-y: auto;
+                    }
+                </style>
             </head>
             <body>
-                <div class="container">
-                    <div class="header">
-                        <h2>Csound WebAudio Engine</h2>
-                        <div class="status" id="status">Initializing...</div>
+                <div class="control-container">
+                    <div class="control-row">
+                        <span class="control-label">AudioContext:</span>
+                        <button id="pauseResumeButton" class="button secondary" disabled>Start</button>
+                        <span class="status-text" id="audioStatus">Not Started</span>
                     </div>
-                    
-                    <div class="controls">
-                        <button id="initButton" class="button primary">Initialize Csound</button>
-                        <button id="stopButton" class="button secondary" disabled>Stop</button>
-                    </div>
-                    
-                    <div class="output-section">
-                        <h3>Console Output</h3>
-                        <div id="console" class="console"></div>
-                    </div>
-                    
-                    <div class="info-section">
-                        <div class="info-item">
-                            <label>Sample Rate:</label>
-                            <span id="sampleRate">-</span>
+                    <div class="control-row">
+                        <span class="control-label">Csound:</span>
+                        <div>
+                            <button id="csoundPauseButton" class="button secondary" disabled>Pause</button>
+                            <button id="csoundStopButton" class="button secondary" disabled>Stop</button>
                         </div>
-                        <div class="info-item">
-                            <label>Channels:</label>
-                            <span id="channels">-</span>
-                        </div>
-                        <div class="info-item">
-                            <label>Status:</label>
-                            <span id="engineStatus">Not initialized</span>
-                        </div>
+                        <span class="status-text" id="engineStatus">Not initialized</span>
                     </div>
+                </div>
+                
+                <div class="content">
+                    <p style="color: var(--vscode-descriptionForeground); font-size: 12px; margin: 0;">
+                        Use the Csound controls above to manage the running performance.
+                    </p>
                 </div>
                 
                 <script nonce="${nonce}" src="${scriptUri}"></script>
@@ -203,10 +271,14 @@ export class CsoundWebViewProvider implements vscode.WebviewViewProvider {
                             continue;
                         }
                         
+                        // CRITICAL FIX #2: Store files with absolute paths starting with /
+                        // This allows parent directory includes like "../chain.orc" to work
+                        const absolutePath = '/' + relativePath;
+                        
                         // Convert Uint8Array to string (Buffer is not available in web context)
                         const decoder = new (globalThis as any).TextDecoder('utf-8');
-                        projectFiles[relativePath] = decoder.decode(content);
-                        console.log(`collectProjectFiles: Added ${relativePath} (${content.length} bytes)`);
+                        projectFiles[absolutePath] = decoder.decode(content);
+                        console.log(`collectProjectFiles: Added ${absolutePath} (${content.length} bytes)`);
                     } catch (error) {
                         console.warn(`Failed to read file ${file.path}:`, error);
                     }
