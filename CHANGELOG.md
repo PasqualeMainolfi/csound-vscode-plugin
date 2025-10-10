@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## Next
 
+## 0.7.0
+
+* Initial implementation of in-browser rendering with WebAudio Csound when installed as a web extension
+
 ## 0.6.6
 
 * Fixes release issue with 0.6.5
