@@ -94,4 +94,51 @@ const extensionConfig = {
   },
   devtool: 'nosources-source-map'
 };
-module.exports = [ webExtensionConfig, extensionConfig ];
+/** @type WebpackConfig */
+const webviewConfig = {
+	mode: 'none',
+	target: 'web', // webview runs in browser context
+	entry: {
+		'csound-webview': './src/webview/csound-webview.ts'
+	},
+	output: {
+		filename: '[name].js',
+		path: path.join(__dirname, './dist/webview'),
+		libraryTarget: 'umd',
+		devtoolModuleFilenameTemplate: '../../[resource-path]'
+	},
+	resolve: {
+		mainFields: ['browser', 'module', 'main'],
+		extensions: ['.ts', '.js'],
+		fallback: {
+			// Webpack 5 no longer polyfills Node.js core modules automatically.
+			'assert': require.resolve('assert')
+		}
+	},
+	module: {
+		rules: [{
+			test: /\.ts$/,
+			exclude: /node_modules/,
+			use: [{
+				loader: 'ts-loader',
+				options: {
+					configFile: path.resolve(__dirname, 'src/webview/tsconfig.webview.json'),
+					compilerOptions: {
+						lib: ['ES2020', 'DOM', 'DOM.Iterable']
+					}
+				}
+			}]
+		}]
+	},
+	plugins: [
+		new webpack.ProvidePlugin({
+			process: 'process/browser',
+		}),
+	],
+	performance: {
+		hints: false
+	},
+	devtool: 'nosources-source-map'
+};
+
+module.exports = [ webExtensionConfig, extensionConfig, webviewConfig ];
