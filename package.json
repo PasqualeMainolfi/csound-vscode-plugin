@@ -12,6 +12,17 @@
     ],
     "main": "./dist/extension.js",
     "browser": "./dist/web/extension.js",
+    "activationEvents": [
+        "onLanguage:csound-csd",
+        "onLanguage:csound-orc",
+        "onLanguage:csound-sco",
+        "onCommand:extension.csoundPlayActiveDocument",
+        "onCommand:extension.csoundKillCsoundProcess",
+        "onCommand:extension.csoundEvalOrc",
+        "onCommand:extension.csoundEvalSco",
+        "onCommand:extension.showOpcodeReference",
+        "onView:csound.webview"
+    ],
     "contributes": {
         "commands": [
             {
