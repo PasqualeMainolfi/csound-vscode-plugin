@@ -1,104 +1,101 @@
-"use strict";
-
 import * as vscode from "vscode";
 import * as commands from "./commands/csoundCommands";
-import { showOpcodeReference } from "./commands/showOpcodeReference";
-import { completionItemProvider, addTokensToDocumentSet, clearTokensForDocumentSet } from "./completionProvider";
+import { getLatestCsoundLSP} from "./utils";
 
-export function activate(context: vscode.ExtensionContext) {
+import {
+  LanguageClientOptions,
+  LanguageClient,
+  ServerOptions
+} from 'vscode-languageclient/node';
+
+let client: LanguageClient;
+
+export async function activate(context: vscode.ExtensionContext) {
   console.log("Csound's vscode plugin is now active!");
+  const lspPath = await getLatestCsoundLSP(context);
+  // const lspPath = "/Users/pm/AcaHub/Coding/tree-sitter-csound/csound-lsp/target/release/csound-lsp"; // for local test
+  if (!lspPath) { return; }
 
-  // Add autocomplete for opcodes
+  const serverOptions: ServerOptions = {
+    command: lspPath,
+    args: [],
+  };
+
+  if (vscode.env.uiKind === vscode.UIKind.Web) {
+    console.warn("LSP disabled in web");
+    return;
+  }
+
+  const clientOptions: LanguageClientOptions = {
+    documentSelector: [
+      { scheme: "file", language: "csound" },
+      { scheme: "file", language: "csound-orc" },
+      { scheme: "file", language: "csound-sco" },
+      { scheme: "file", language: "csound-csd" },
+    ],
+  };
+
+  client = new LanguageClient(
+    "csound-lsp",
+    "Csound Language Server",
+    serverOptions,
+    clientOptions
+  );
+
+  client.start();
+
+  context.subscriptions.push({
+    dispose: () => client.stop()
+  });
+  
   context.subscriptions.push(
-    vscode.languages.registerCompletionItemProvider(
-      ["csound-csd", "csound-orc"],
-      completionItemProvider,
-      ""
+    vscode.commands.registerCommand(
+      "csound.runFile",
+      commands.runFile, 
+    )
+  );
+ 
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "csound.saveAsAudioFile",
+      commands.saveAsAudioFile, 
+    )
+  );
+  
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "csound.stopExecution",
+      commands.stopExecution, 
+    )
+  );
+  
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "csound.openManual",
+      commands.openManual,
     )
   );
 
-  // Listen for changes in text documents
   context.subscriptions.push(
-    vscode.workspace.onDidChangeTextDocument(event => {
-      const document = event.document;
-
-      event.contentChanges.forEach(change => {
-        const lineNumber = change.range.start.line;
-        const lineText = document.lineAt(lineNumber).text;
-        const changeText = change.text;
-
-        if (/\W/.test(changeText)) {
-          // Add tokens from the current line
-          addTokensToDocumentSet(document, lineText);
-        }
-      });
-    })
+    vscode.commands.registerTextEditorCommand(
+      "extension.csoundEvalOrc",
+      commands.evalOrc
+    )
   );
 
-  // Listen for when an editor becomes active (e.g., switching between files)
   context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor(editor => {
-      if (editor) {
-        const document = editor.document;
-        addTokensToDocumentSet(document, document.getText()); // Parse the active document and add tokens
-      }
-    })
+    vscode.commands.registerTextEditorCommand(
+      "extension.csoundEvalSco",
+      commands.evalSco
+    )
   );
-
-  // Handle already open files when the extension is activated
-  if (vscode.window.activeTextEditor) {
-    const document = vscode.window.activeTextEditor.document;
-    addTokensToDocumentSet(document, document.getText()); // Parse the currently active file
-  }
-
-  // Clean up token sets when a document is closed
-  context.subscriptions.push(
-    vscode.workspace.onDidCloseTextDocument(document => {
-      const uri = document.uri.toString();
-      clearTokensForDocumentSet(uri); // Remove the token set for this document
-    })
-  );
-
-
-  const showOpcodeReferenceCommand = vscode.commands.registerCommand(
-    "extension.showOpcodeReference",
-    showOpcodeReference
-  );
-  context.subscriptions.push(showOpcodeReferenceCommand);
-
-  const playCommand = vscode.commands.registerTextEditorCommand(
-    "extension.csoundPlayActiveDocument",
-    commands.playActiveDocument
-  );
-  context.subscriptions.push(playCommand);
-
-  const browseForExecutableCommand = vscode.commands.registerTextEditorCommand(
-    "extension.csoundSelectExecutable",
-    commands.selectCsoundExecutable
-  );
-  context.subscriptions.push(browseForExecutableCommand);
-
-  const killCommand = vscode.commands.registerTextEditorCommand(
-    "extension.csoundKillCsoundProcess",
-    commands.killCsoundProcess
-  );
-  context.subscriptions.push(killCommand);
-
-  const evalOrcCommand = vscode.commands.registerTextEditorCommand(
-    "extension.csoundEvalOrc",
-    commands.evalOrc
-  );
-  context.subscriptions.push(evalOrcCommand);
-
-  const evalScoCommand = vscode.commands.registerTextEditorCommand(
-    "extension.csoundEvalSco",
-    commands.evalSco
-  );
-  context.subscriptions.push(evalScoCommand);
 
 }
 
 // This method is called when your extension is deactivated
 export function deactivate() {
-  commands.killCsoundProcess();
+  commands.closeManualServer();
+  return client?.stop();
 }
+
+

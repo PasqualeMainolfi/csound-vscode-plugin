@@ -71,4 +71,4 @@ const getWebviewContent = (htmlContent: string) => {
       </body>
       </html>
       `;
-}
+};

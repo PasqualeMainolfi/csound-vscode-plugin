@@ -283,7 +283,7 @@ class CsoundWebView {
             const result = await this.csound.compileCSD(absolutePath, 0);
             if (result !== 0) {
                 this.logError(`Failed to compile CSD: ${result}`);
-                return
+                return;
             }
 
 
