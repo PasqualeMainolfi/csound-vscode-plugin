@@ -128,6 +128,13 @@ export async function getLatestCsoundLSP(context: vscode.ExtensionContext): Prom
 
     if (!fs.existsSync(binDir)) {
         fs.mkdirSync(binDir, { recursive: true });
+    } else {
+        fs.readdir(binDir, (err, files) => {
+            if (err) { return; }
+            files.forEach((file) => {
+                fs.unlinkSync(path.join(binDir, file));
+            });
+        });
     }
     
     const downloadUrl = `https://github.com/PasqualeMainolfi/csound-lsp/releases/latest/download/${binaryName}`;
