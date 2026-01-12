@@ -110,7 +110,7 @@ export async function openManual() {
     
     if (result?.action === "open html csound manual") {
         try {
-            const localUrl = await startManualLocalServer(result.path, manualServer);
+            const localUrl = await startManualLocalServer(result.path, { server: manualServer });
             
             const panel = vscode.window.createWebviewPanel(
                 "CsoundManual",
@@ -165,66 +165,67 @@ export async function stopExecution() {
     }
 }
 
-async function startManualLocalServer(rootPath: string, manualServer: http.Server | null): Promise<string> {
-    return new Promise((resolve, reject) => {
-        if (manualServer) { manualServer.close(); }
+async function startManualLocalServer(rootPath: string, manualServer: { server: http.Server | null }): Promise<string> {
+    if (manualServer.server) { 
+        await new Promise(res => manualServer.server!.close(res)); 
+    }
 
-        manualServer = http.createServer((req, res) => {
-            if (req.method !== 'GET') {
-                res.statusCode = 405;
-                res.end();
-                return;
+    manualServer.server = http.createServer((req, res) => {
+        if (req.method !== 'GET') {
+            res.statusCode = 405;
+            res.end();
+            return;
+        }
+        const baseURL = `http://${req.headers.host || 'localhost'}`;
+        let requestUrl: URL;
+        try {
+            requestUrl = new URL(req.url || '', baseURL);
+
+        } catch (e) {
+            res.statusCode = 400;
+            res.end('Bad Request');
+            return;
+        }
+
+        let pathname = requestUrl.pathname;
+        try {
+            pathname = decodeURIComponent(pathname);
+        } catch (e) { }
+        
+        let sanitizePath = path.normalize(pathname || '').replace(/^(\.\.[\/\\])+/, '');
+        let filePath = path.join(rootPath, sanitizePath);
+
+        if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+            filePath = path.join(filePath, 'index.html');
+        }
+
+        fs.readFile(filePath, (err, data) => {
+            if (err) {
+                res.statusCode = 404;
+                res.end('File not found');
+            } else {
+                const ext = path.extname(filePath).toLowerCase();
+                const mimeTypes: { [key: string]: string } = {
+                    '.html': 'text/html',
+                    '.js': 'text/javascript',
+                    '.css': 'text/css',
+                    '.json': 'application/json',
+                    '.png': 'image/png',
+                    '.jpg': 'image/jpg',
+                    '.gif': 'image/gif',
+                };
+                res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+                res.end(data);
             }
-            const baseURL = `http://${req.headers.host || 'localhost'}`;
-            let requestUrl: URL;
-            try {
-                requestUrl = new URL(req.url || '', baseURL);
-
-            } catch (e) {
-                res.statusCode = 400;
-                res.end('Bad Request');
-                return;
-            }
-
-            let pathname = requestUrl.pathname;
-            try {
-                pathname = decodeURIComponent(pathname);
-            } catch (e) { }
-            
-            let sanitizePath = path.normalize(pathname || '').replace(/^(\.\.[\/\\])+/, '');
-            let filePath = path.join(rootPath, sanitizePath);
-
-            if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
-                filePath = path.join(filePath, 'index.html');
-            }
-
-            fs.readFile(filePath, (err, data) => {
-                if (err) {
-                    res.statusCode = 404;
-                    res.end('File not found');
-                } else {
-                    const ext = path.extname(filePath).toLowerCase();
-                    const mimeTypes: { [key: string]: string } = {
-                        '.html': 'text/html',
-                        '.js': 'text/javascript',
-                        '.css': 'text/css',
-                        '.json': 'application/json',
-                        '.png': 'image/png',
-                        '.jpg': 'image/jpg',
-                        '.gif': 'image/gif',
-                    };
-                    res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
-                    res.end(data);
-                }
-            });
         });
-
-        manualServer.listen(0, '127.0.0.1', () => {
-            const address = manualServer?.address();
+    });
+    
+    return new Promise((resolve, reject) => {
+        manualServer.server!.listen(0, "localhost", () => {
+            const address = manualServer.server!.address();
             if (address && typeof address !== 'string') {
-                const port = address.port;
-                console.log(`Start csound manual server on http://127.0.0.1:${port}`);
-                resolve(`http://127.0.0.1:${port}`);
+                console.log(`Start csound manual server on localhost:${address.port}`);
+                resolve(`http://localhost:${address.port}`);
             } else {
                 reject("Manual Server Error");
             }

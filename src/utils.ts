@@ -135,7 +135,7 @@ export async function getLatestCsoundLSP(context: vscode.ExtensionContext): Prom
     try {
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: `Installazione Csound LSP (${binaryName})...`,
+            title: `Csound LSP installation (${binaryName})...`,
             cancellable: false
         }, async (progress) => { await downloadFile(downloadUrl, fullPath, progress); });
 

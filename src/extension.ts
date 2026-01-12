@@ -12,8 +12,8 @@ let client: LanguageClient;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log("Csound's vscode plugin is now active!");
-  // const lspPath = await getLatestCsoundLSP(context);
-  const lspPath = "/Users/pm/AcaHub/Coding/tree-sitter-csound/csound-lsp/target/release/csound-lsp"; // for local test
+  const lspPath = await getLatestCsoundLSP(context);
+  // const lspPath = "/Users/pm/AcaHub/Coding/tree-sitter-csound/csound-lsp/target/release/csound-lsp"; // for local test
   if (!lspPath) { return; }
 
   const serverOptions: ServerOptions = {
