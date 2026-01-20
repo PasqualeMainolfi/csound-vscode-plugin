@@ -129,7 +129,7 @@ export async function getLatestCsoundLSP(context: vscode.ExtensionContext): Prom
             fs.mkdirSync(binDir, { recursive: true });
         } else {
             const files = fs.readdirSync(binDir);
-            for (const file in files) {
+            for (const file of files) {
                 fs.unlinkSync(path.join(binDir, file));
             }
         }
