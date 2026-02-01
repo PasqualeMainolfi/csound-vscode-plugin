@@ -87,7 +87,7 @@ export const flash = function (textEditor:vscode.TextEditor, range:vscode.Range)
     setTimeout(function () {
         flashDecorationType.dispose();
     }, 250);
-}; 
+};
 
 export async function getLatestCsoundLSP(context: vscode.ExtensionContext): Promise<string | undefined> {
     const binDir = path.join(context.extensionPath, 'lsp-bin');
@@ -98,17 +98,17 @@ export async function getLatestCsoundLSP(context: vscode.ExtensionContext): Prom
 
     if (platform === 'win32') {
         binaryName = 'csound-lsp-windows-x86_64.exe';
-    } 
+    }
     else if (platform === 'linux') {
         binaryName = 'csound-lsp-linux-x86_64';
-    } 
+    }
     else if (platform === 'darwin') {
         if (arch === 'arm64') {
             binaryName = 'csound-lsp-macos-aarch64';
         } else {
             binaryName = 'csound-lsp-macos-x86_64';
         }
-    } 
+    }
     else {
         vscode.window.showErrorMessage(`OS not supported: ${platform}`);
         return undefined;
@@ -118,13 +118,13 @@ export async function getLatestCsoundLSP(context: vscode.ExtensionContext): Prom
 
     const fullPath = path.join(binDir, binaryName + "-" + relTag.replaceAll(".", "_"));
     if (fs.existsSync(fullPath)) { return fullPath; }
-    
+
     const inform = await vscode.window.showInformationMessage(
         "A new version of the Csound LSP is available. Do you want to install or update it?",
         "Yes", "No"
     );
 
-    if (inform === "Yes") { 
+    if (inform === "Yes") {
         if (!fs.existsSync(binDir)) {
             fs.mkdirSync(binDir, { recursive: true });
         } else {
@@ -165,7 +165,7 @@ export async function getLatestCsoundLSP(context: vscode.ExtensionContext): Prom
         const lspFile = files.find(f => f.startsWith("csound-lsp"));
         if (!lspFile) {
             vscode.window.showWarningMessage("No Csound LSP found!");
-            return undefined;   
+            return undefined;
         }
         return path.join(binDir, lspFile);
     }
@@ -203,7 +203,7 @@ function downloadFile(
 
             response.on('data', (chunk) => {
                 receivedBytes += chunk.length;
-                
+
                 if (totalBytes > 0) {
                     const percentage = Math.round((receivedBytes / totalBytes) * 100);
                     progress.report({ message: `${percentage}%` });
@@ -253,7 +253,7 @@ function getLatestReleaseTag(): Promise<string> {
             res.on('end', () => {
                 try {
                     const release = JSON.parse(data);
-                    resolve(release.tag_name); 
+                    resolve(release.tag_name);
                 } catch (e) {
                     reject(e);
                 }

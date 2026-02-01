@@ -12,6 +12,10 @@
     ],
     "main": "./dist/extension.js",
     "browser": "./dist/web/extension.js",
+    "extensionKind": [
+        "workspace",
+        "ui"
+    ],
     "activationEvents": [
         "onCommand:extension.csoundEvalSco",
         "onCommand:extension.csoundEvalOrc"
@@ -96,19 +100,98 @@
             {
                 "language": "csound",
                 "scopes": {
-                    "decorator":    ["decorator"],
-                    "variable":     ["variable"],
-                    "function":     ["function"],
-                    "type":         ["type"],
-                    "keyword":      ["keyword"],
-                    "string":       ["string"],
-                    "number":       ["number"],
-                    "comment":      ["comment.line", "comment.block"],
-                    "operator":     ["operator"],
-                    "macro":        ["macro"],
-                    "property":     ["property"],
-                    "namespace":    ["namespace"]
+                    "decorator": [
+                        "decorator"
+                    ],
+                    "variable": [
+                        "variable"
+                    ],
+                    "function": [
+                        "function"
+                    ],
+                    "type": [
+                        "type"
+                    ],
+                    "keyword": [
+                        "keyword"
+                    ],
+                    "string": [
+                        "string"
+                    ],
+                    "number": [
+                        "number"
+                    ],
+                    "comment": [
+                        "comment.line",
+                        "comment.block"
+                    ],
+                    "operator": [
+                        "operator"
+                    ],
+                    "macro": [
+                        "macro"
+                    ],
+                    "property": [
+                        "property"
+                    ],
+                    "namespace": [
+                        "namespace"
+                    ]
                 }
+            }
+        ],
+        "semanticTokenTypes": [
+            {
+                "id": "decorator",
+                "description": "Style for decorators"
+            },
+            {
+                "id": "parameter",
+                "description": "Style for parameters"
+            },
+            {
+                "id": "macro",
+                "description": "Style for macros"
+            },
+            {
+                "id": "type",
+                "description": "Style for types"
+            },
+            {
+                "id": "comment",
+                "description": "Style for comments"
+            },
+            {
+                "id": "keyword",
+                "description": "Style for keywords"
+            },
+            {
+                "id": "property",
+                "description": "Style for properties"
+            },
+            {
+                "id": "namespace",
+                "description": "Style for namespaces"
+            },
+            {
+                "id": "variable",
+                "description": "Style for variables"
+            },
+            {
+                "id": "string",
+                "description": "Style for strings"
+            },
+            {
+                "id": "number",
+                "description": "Style for numbers"
+            },
+            {
+                "id": "function",
+                "description": "Style for opcodes"
+            },
+            {
+                "id": "operator",
+                "description": "Style for operators"
             }
         ],
         "configurationDefaults": {
@@ -157,6 +240,9 @@
         "compile": "webpack",
         "watch": "webpack --watch",
         "package": "webpack --mode production --devtool hidden-source-map",
+        "compile-web": "webpack --config webpack.browser.config.js",
+        "watch-web": "webpack --config webpack.browser.config.js --watch",
+        "package-web": "webpack --config webpack.browser.config.js --mode production --devtool hidden-source-map",
         "compile-tests": "tsc -p . --outDir out",
         "watch-tests": "tsc -p -w . --outDir out",
         "pretest": "npm run compile-tests && npm run compile && npm run lint",
@@ -175,6 +261,7 @@
         "@vscode/test-electron": "^1.6.2",
         "@vscode/test-web": "^0.0.8",
         "assert": "^2.1.0",
+        "copy-webpack-plugin": "^13.0.1",
         "eslint": "^7.32.0",
         "glob": "^7.2.3",
         "mocha": "^11.7.5",
@@ -186,7 +273,13 @@
     },
     "dependencies": {
         "@csound/browser": "^7.0.0-beta11",
-        "vscode-languageclient": "^9.0.1"
+        "install": "^0.13.0",
+        "npm": "^11.8.0",
+        "path-browserify": "^1.0.1",
+        "vscode-languageclient": "^9.0.1",
+        "vscode-languageserver": "^9.0.1",
+        "vscode-languageserver-textdocument": "^1.0.12",
+        "web-tree-sitter": "^0.26.3"
     },
     "repository": {
         "type": "git",
