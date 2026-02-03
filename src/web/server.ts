@@ -1,9 +1,15 @@
 /// <reference lib="webworker" />
 /// <reference lib="dom" />
 
-import { SEMANTIC_TOKEN_TYPE, mapTokenToIndex, captureToTokenType, getDeltaPos } from './utils';
+
 import { TextDocument, TextEdit } from 'vscode-languageserver-textdocument';
 import { Parser, Language, Tree, Query, Point } from 'web-tree-sitter';
+import {
+    SEMANTIC_TOKEN_TYPE,
+    getSemanticTokens,
+    getInjections
+} from './utils';
+
 import {
     createConnection,
     BrowserMessageReader,
@@ -69,16 +75,7 @@ let jsonOpcodes: Map<string, any>;
 let jsonFlags: Map<string, any>;
 let jsonMacros: Map<string, any>;
 
-// injections resources
-let htmlParser: Parser;
-let htmlLanguage: Language;
-let htmlHighlightsQuery: Query;
-let jsonParser: Parser;
-let jsonLanguage: Language;
-let jsonHighlightsQuery: Query;
-let pythonParser: Parser;
-let pythonLanguage: Language;
-let pythonHighlightsQuery: Query;
+let injectedLanguages: Record<string, { parser: Parser, query: Query }> = {};
 
 function base64ToUint8Array(base64: string | undefined): Uint8Array {
     if (!base64) {
@@ -102,22 +99,14 @@ connection.onInitialize(async (params): Promise<InitializeResult> => {
         const coreBuffer = base64ToUint8Array(options.mainWasmUri);
         await Parser.init({ wasmBinary: coreBuffer } as any);
 
+        // csound
         parser = new Parser();
-
         const csoundBuffer = base64ToUint8Array(options.csoundWasmUri);
         csoundLanguage = await Language.load(csoundBuffer);
-
         parser.setLanguage(csoundLanguage);
-
-        if (options.highlights) {
-            highlightsQuery = new Query(csoundLanguage, options.highlights);
-        }
-        if (options.indents) {
-            indentsQuery = new Query(csoundLanguage, options.indents);
-        }
-        if (options.injections) {
-            injectionsQuery = new Query(csoundLanguage, options.injections);
-        }
+        highlightsQuery = new Query(csoundLanguage, options.highlights);
+        indentsQuery = new Query(csoundLanguage, options.indents);
+        injectionsQuery = new Query(csoundLanguage, options.injections);
 
         opcodeFromManual = options.opcodeInfos;
         jsonOpcodes = options.opcodeCompletions;
@@ -126,33 +115,37 @@ connection.onInitialize(async (params): Promise<InitializeResult> => {
 
         // html
         const htmlBuffer = base64ToUint8Array(options.htmlWasmUri);
-        htmlLanguage = await Language.load(htmlBuffer);
-        htmlParser = new Parser();
+        const htmlLanguage = await Language.load(htmlBuffer);
+        const htmlParser = new Parser();
         htmlParser.setLanguage(htmlLanguage);
-
-        if (options.htmlHighlights) {
-            htmlHighlightsQuery = new Query(htmlLanguage, options.htmlHighlights);
-        }
+        const htmlHighlightsQuery = new Query(htmlLanguage, options.htmlHighlights);
 
         // json
         const jsonBuffer = base64ToUint8Array(options.jsonWasmUri);
-        jsonLanguage = await Language.load(jsonBuffer);
-        jsonParser = new Parser();
+        const jsonLanguage = await Language.load(jsonBuffer);
+        const jsonParser = new Parser();
         jsonParser.setLanguage(jsonLanguage);
-
-        if (options.jsonHighlights) {
-            jsonHighlightsQuery = new Query(jsonLanguage, options.jsonHighlights);
-        }
+        const jsonHighlightsQuery = new Query(jsonLanguage, options.jsonHighlights);
 
         // python
         const pythonBuffer = base64ToUint8Array(options.pythonWasmUri);
-        pythonLanguage = await Language.load(pythonBuffer);
-        pythonParser = new Parser();
+        const pythonLanguage = await Language.load(pythonBuffer);
+        const pythonParser = new Parser();
         pythonParser.setLanguage(pythonLanguage);
+        const pythonHighlightsQuery = new Query(pythonLanguage, options.pythonHighlights);
 
-        if (options.pythonHighlights) {
-            pythonHighlightsQuery = new Query(pythonLanguage, options.pythonHighlights);
-        }
+        // bash
+        const bashBuffer = base64ToUint8Array(options.bashWasmUri);
+        const bashLanguage = await Language.load(bashBuffer);
+        const bashParser = new Parser();
+        bashParser.setLanguage(bashLanguage);
+        const bashHighlightsQuery = new Query(bashLanguage, options.bashHighlights);
+
+        injectedLanguages["csound"] = { parser: parser, query: highlightsQuery };
+        injectedLanguages["html"] = { parser: htmlParser, query: htmlHighlightsQuery };
+        injectedLanguages["json"] = { parser: jsonParser, query: jsonHighlightsQuery };
+        injectedLanguages["python"] = { parser: pythonParser, query: pythonHighlightsQuery };
+        injectedLanguages["bash"] = { parser: bashParser, query: bashHighlightsQuery };
 
         connection.console.log("Csound LSP-Web initialized!");
 
@@ -282,7 +275,8 @@ connection.onCompletion(({ textDocument, position }): CompletionItem[] => {
                                 value: data["description"]
                             }
                         });
-                        }
+                    }
+                    return items;
                 default:
                     if (findedNodeText.length) {
                         const nodeParent = findedNode.parent;
@@ -324,61 +318,19 @@ connection.languages.semanticTokens.on((params) => {
     if (!doc || (doc.version !== docState.version)) { return { data: [] }; }
 
     const tokenBuilder = new SemanticTokensBuilder();
-    const captures = highlightsQuery.captures(docState.tree.rootNode);
 
-    const sortedCaptures = getDeltaPos(captures);
+    const csTokens = getSemanticTokens(highlightsQuery, docState.tree, docState.text);
+    const injTokens = getInjections(injectionsQuery, docState.tree, injectedLanguages);
 
-    let lastRow = 0;
-    let lastColumn = 0;
+    const allTokens = [...csTokens, ...injTokens];
+    const sortedTokens = allTokens.sort((a, b) => {
+        if (a.line !== b.line) { return a.line - b.line; }
+        return a.char - b.char;
+    });
 
-    for (const capture of sortedCaptures) {
-        const node = capture.node;
-
-        if (node.isError || node.isMissing) { continue; }
-
-        const type = captureToTokenType(capture.name);
-        const index = mapTokenToIndex(type);
-        if (index < 0) { continue; }
-
-        const start = node.startPosition;
-        const end = node.endPosition;
-
-        if (start.row < lastRow || (start.row === lastRow && start.column < lastColumn)) {
-            continue;
-        }
-
-        if (start.row === end.row) {
-            const length = end.column - start.column;
-            if (length > 0) {
-                tokenBuilder.push(start.row, start.column, length, index, 0);
-                lastRow = start.row;
-                lastColumn = end.column;
-            }
-        }
-        else {
-            const text = docState.text;
-            const startByte = node.startIndex;
-            const endByte = node.endIndex;
-            const slicedText = text.slice(startByte, endByte);
-            const lines = slicedText.split(/\r?\n/);
-            for (let i = 0; i < lines.length; i++) {
-                const lineText = lines[i];
-                const length = lineText.length;
-
-                if (length === 0) { continue; }
-
-                const row = start.row + i;
-                const col = i === 0 ? start.column : 0;
-                if (row < lastRow || (row === lastRow && col < lastColumn)) {
-                    continue;
-                }
-                tokenBuilder.push(row, col, length, index, 0);
-
-                lastRow = row;
-                lastColumn = col + length;
-            }
-        }
-    }
+    for (const token of sortedTokens) {
+        tokenBuilder.push(token.line, token.char, token.length, token.index, token.modifier);
+    };
 
     return tokenBuilder.build();
 });

@@ -1,4 +1,4 @@
-import { QueryCapture } from "web-tree-sitter";
+import { Parser, Query, QueryCapture, Tree, Node } from "web-tree-sitter";
 
 export const SEMANTIC_TOKEN_TYPE = [
     "decorator",
@@ -79,13 +79,118 @@ export function captureToTokenType(capture: string): string {
     }
 }
 
-export function getDeltaPos(captures: QueryCapture[]) {
-    const sortedCaptures = captures.sort((a, b) => {
-        const startA = a.node.startPosition;
-        const startB = b.node.startPosition;
-        if (startA.row !== startB.row) { return startA.row - startB.row; }
-        if (startA.column !== startB.column) { return startA.column - startB.column; }
-        return (b.node.endIndex - b.node.startIndex) - (a.node.endIndex - a.node.startIndex);
-    });
-    return sortedCaptures;
+
+export interface SemToken {
+    node: Node;
+    line: number;
+    char: number;
+    length: number;
+    index: number;
+    modifier: number;
+};
+
+export function getSemanticTokens(query: Query, tree: Tree, text: string): SemToken[] {
+    const captures = query.captures(tree.rootNode);
+
+    let tokens: SemToken[] = [];
+
+    let lastRow = 0;
+    let lastColumn = 0;
+
+    for (const capture of captures) {
+        const node = capture.node;
+
+        if (node.isError || node.isMissing) { continue; }
+
+        const type = captureToTokenType(capture.name);
+        const index = mapTokenToIndex(type);
+        if (index < 0) { continue; }
+
+        const start = node.startPosition;
+        const end = node.endPosition;
+
+        if (start.row < lastRow || (start.row === lastRow && start.column < lastColumn)) {
+            continue;
+        }
+
+        if (start.row === end.row) {
+            const length = end.column - start.column;
+            if (length > 0) {
+                tokens.push({
+                    node: node,
+                    line: start.row,
+                    char: start.column,
+                    length: length,
+                    index: index,
+                    modifier: 0
+                });
+                lastRow = start.row;
+                lastColumn = end.column;
+            }
+        }
+        else {
+            const startByte = node.startIndex;
+            const endByte = node.endIndex;
+            const slicedText = text.slice(startByte, endByte);
+            const lines = slicedText.split(/\r?\n/);
+            for (let i = 0; i < lines.length; i++) {
+                const lineText = lines[i];
+                const length = lineText.length;
+
+                if (length === 0) { continue; }
+
+                const row = start.row + i;
+                const col = i === 0 ? start.column : 0;
+                if (row < lastRow || (row === lastRow && col < lastColumn)) {
+                    continue;
+                }
+                tokens.push({
+                    node: node,
+                    line: row,
+                    char: col,
+                    length: length,
+                    index: index,
+                    modifier: 0
+                });
+
+                lastRow = row;
+                lastColumn = col + length;
+            }
+        }
+    }
+    return tokens;
+}
+
+
+export function getInjections(
+    injection: Query,
+    tree: Tree,
+    languages: Record<string, { parser: Parser, query: Query }>
+): SemToken[] {
+    const injectionsCaptures = injection.captures(tree.rootNode);
+
+    let allInjections: SemToken[] = [];
+    for (const capture of injectionsCaptures) {
+        if (capture.name === "injection.content") {
+            let langName = capture.setProperties["injection.language"];
+
+            if (!langName) { continue; }
+
+            const lang = languages[langName];
+            const node = capture.node;
+            const nodeContent = node.text;
+            const subTree = lang.parser.parse(nodeContent);
+
+            const currentTokens = getSemanticTokens(lang.query, subTree, nodeContent);
+            for (const token of currentTokens) {
+                const absoluteLine = node.startPosition.row + token.line;
+                const absoluteChar = (token.line === 0)
+                    ? node.startPosition.column + token.char
+                    : token.char;
+
+                allInjections.push({ ...token, line: absoluteLine, char: absoluteChar });
+            }
+        }
+    }
+    return allInjections;
 }

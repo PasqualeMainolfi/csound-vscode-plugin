@@ -150,6 +150,15 @@ const lspServerConfig = {
                     from: path.resolve(__dirname, 'node_modules/tree-sitter-json/queries'),
                     to: './json_queries',
                     context: 'src/web'
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-bash/tree-sitter-bash.wasm'),
+                    to: './'
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-bash/queries'),
+                    to: './bash_queries',
+                    context: 'src/web'
                 }
             ]
         })

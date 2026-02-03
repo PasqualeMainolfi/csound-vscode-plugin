@@ -72,6 +72,8 @@ export async function activate(context: vscode.ExtensionContext) {
     const jsonTreeQueriesBaseUri = vscode.Uri.joinPath(webBaseUri, 'json_queries');
     const pythonWasmUri = vscode.Uri.joinPath(webBaseUri, 'tree-sitter-python.wasm');
     const pythonQueriesBaseUri = vscode.Uri.joinPath(webBaseUri, 'python_queries');
+    const bashWasmUri = vscode.Uri.joinPath(webBaseUri, 'tree-sitter-bash.wasm');
+    const bashQueriesBaseUri = vscode.Uri.joinPath(webBaseUri, 'bash_queries');
 
     const worker =  new Worker(serverMain.toString());
 
@@ -90,7 +92,9 @@ export async function activate(context: vscode.ExtensionContext) {
         jsonData,
         jsonHighlights,
         pythonData,
-        pythonHighlights
+        pythonHighlights,
+        bashData,
+        bashHighlights
     ] = await Promise.all([
         getWasmBase64(coreWasmUri),
         getWasmBase64(csoundWasmUri),
@@ -104,9 +108,11 @@ export async function activate(context: vscode.ExtensionContext) {
         getWasmBase64(htmlWasmUri),
         readTextFile(vscode.Uri.joinPath(htmlQueriesBaseUri, 'highlights.scm')),
         getWasmBase64(jsonWasmUri),
-        readTextFile(vscode.Uri.joinPath(jsonQueriesBaseUri, 'highlights.scm')),
+        readTextFile(vscode.Uri.joinPath(jsonTreeQueriesBaseUri, 'highlights.scm')),
         getWasmBase64(pythonWasmUri),
         readTextFile(vscode.Uri.joinPath(pythonQueriesBaseUri, 'highlights.scm')),
+        getWasmBase64(bashWasmUri),
+        readTextFile(vscode.Uri.joinPath(bashQueriesBaseUri, 'highlights.scm')),
     ]);
 
     const clientOptions: LanguageClientOptions = {
@@ -129,6 +135,8 @@ export async function activate(context: vscode.ExtensionContext) {
             jsonHighlights: jsonHighlights,
             pythonWasmUri: pythonData,
             pythonHighlights: pythonHighlights,
+            bashWasmUri: bashData,
+            bashHighlights: bashHighlights,
         }
     };
 
