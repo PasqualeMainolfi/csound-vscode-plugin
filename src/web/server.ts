@@ -1,9 +1,9 @@
 /// <reference lib="webworker" />
 /// <reference lib="dom" />
 
-
 import { TextDocument, TextEdit } from 'vscode-languageserver-textdocument';
 import { Parser, Language, Tree, Query, Point } from 'web-tree-sitter';
+import { updateTree, DocState } from './parser';
 import {
     SEMANTIC_TOKEN_TYPE,
     getSemanticTokens,
@@ -26,7 +26,6 @@ import {
 
 // TODO: resolve included .udo files
 // TODO: resolve unused and undefined vars
-// TODO: language injections
 // TODO: resolve var scope
 
 const messageReader = new BrowserMessageReader(self as any);
@@ -34,32 +33,6 @@ const messageWriter = new BrowserMessageWriter(self as any);
 const connection = createConnection(messageReader, messageWriter);
 
 const documents = new TextDocuments(TextDocument);
-
-interface DocState {
-    tree: Tree | null;
-    text: string;
-    textLines: string[];
-    version: number;
-};
-
-function updateTree(document: TextDocument) {
-    if (!parser) { return; }
-    const uri = document.uri;
-    const text = document.getText();
-    const textLines = text.split(/\r?\n/);
-    const version = document.version;
-
-    const newTree = parser.parse(text);
-
-    if (newTree) {
-        docs.set(uri, {
-            tree: newTree,
-            text: text,
-            textLines: textLines,
-            version: version
-        });
-    }
-}
 
 let parser: Parser;
 let csoundLanguage: Language;
@@ -183,7 +156,7 @@ documents.onDidClose(params => {
 });
 
 documents.onDidChangeContent(change => {
-    updateTree(change.document);
+    updateTree(parser, change.document, docs);
 });
 
 connection.onHover(({ textDocument, position }): Hover | null => {
