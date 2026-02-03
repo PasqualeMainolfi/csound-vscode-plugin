@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 /// <reference lib="dom" />
 
-import { SEMANTIC_TOKEN_TYPE, mapTokenToIndex, captureToTokenType } from './utils';
+import { SEMANTIC_TOKEN_TYPE, mapTokenToIndex, captureToTokenType, getDeltaPos } from './utils';
 import { TextDocument, TextEdit } from 'vscode-languageserver-textdocument';
 import { Parser, Language, Tree, Query, Point } from 'web-tree-sitter';
 import {
@@ -43,7 +43,6 @@ function updateTree(document: TextDocument) {
     const textLines = text.split(/\r?\n/);
     const version = document.version;
 
-    const oldState = docs.get(uri);
     const newTree = parser.parse(text);
 
     if (newTree) {
@@ -69,6 +68,17 @@ let opcodeFromManual: Record<string, string>;
 let jsonOpcodes: Map<string, any>;
 let jsonFlags: Map<string, any>;
 let jsonMacros: Map<string, any>;
+
+// injections resources
+let htmlParser: Parser;
+let htmlLanguage: Language;
+let htmlHighlightsQuery: Query;
+let jsonParser: Parser;
+let jsonLanguage: Language;
+let jsonHighlightsQuery: Query;
+let pythonParser: Parser;
+let pythonLanguage: Language;
+let pythonHighlightsQuery: Query;
 
 function base64ToUint8Array(base64: string | undefined): Uint8Array {
     if (!base64) {
@@ -113,6 +123,36 @@ connection.onInitialize(async (params): Promise<InitializeResult> => {
         jsonOpcodes = options.opcodeCompletions;
         jsonFlags = options.flagCompletions;
         jsonMacros = options.macroCompletions;
+
+        // html
+        const htmlBuffer = base64ToUint8Array(options.htmlWasmUri);
+        htmlLanguage = await Language.load(htmlBuffer);
+        htmlParser = new Parser();
+        htmlParser.setLanguage(htmlLanguage);
+
+        if (options.htmlHighlights) {
+            htmlHighlightsQuery = new Query(htmlLanguage, options.htmlHighlights);
+        }
+
+        // json
+        const jsonBuffer = base64ToUint8Array(options.jsonWasmUri);
+        jsonLanguage = await Language.load(jsonBuffer);
+        jsonParser = new Parser();
+        jsonParser.setLanguage(jsonLanguage);
+
+        if (options.jsonHighlights) {
+            jsonHighlightsQuery = new Query(jsonLanguage, options.jsonHighlights);
+        }
+
+        // python
+        const pythonBuffer = base64ToUint8Array(options.pythonWasmUri);
+        pythonLanguage = await Language.load(pythonBuffer);
+        pythonParser = new Parser();
+        pythonParser.setLanguage(pythonLanguage);
+
+        if (options.pythonHighlights) {
+            pythonHighlightsQuery = new Query(pythonLanguage, options.pythonHighlights);
+        }
 
         connection.console.log("Csound LSP-Web initialized!");
 
@@ -286,13 +326,7 @@ connection.languages.semanticTokens.on((params) => {
     const tokenBuilder = new SemanticTokensBuilder();
     const captures = highlightsQuery.captures(docState.tree.rootNode);
 
-    const sortedCaptures = captures.sort((a, b) => {
-        const startA = a.node.startPosition;
-        const startB = b.node.startPosition;
-        if (startA.row !== startB.row) { return startA.row - startB.row; }
-        if (startA.column !== startB.column) { return startA.column - startB.column; }
-        return (b.node.endIndex - b.node.startIndex) - (a.node.endIndex - a.node.startIndex);
-    });
+    const sortedCaptures = getDeltaPos(captures);
 
     let lastRow = 0;
     let lastColumn = 0;

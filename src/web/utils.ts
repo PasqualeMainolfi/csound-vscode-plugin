@@ -1,3 +1,5 @@
+import { QueryCapture } from "web-tree-sitter";
+
 export const SEMANTIC_TOKEN_TYPE = [
     "decorator",
     "parameter",
@@ -75,4 +77,15 @@ export function captureToTokenType(capture: string): string {
         default:
             return "variable";
     }
+}
+
+export function getDeltaPos(captures: QueryCapture[]) {
+    const sortedCaptures = captures.sort((a, b) => {
+        const startA = a.node.startPosition;
+        const startB = b.node.startPosition;
+        if (startA.row !== startB.row) { return startA.row - startB.row; }
+        if (startA.column !== startB.column) { return startA.column - startB.column; }
+        return (b.node.endIndex - b.node.startIndex) - (a.node.endIndex - a.node.startIndex);
+    });
+    return sortedCaptures;
 }

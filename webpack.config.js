@@ -46,17 +46,6 @@ const webExtensionConfig = {
         new copyPlugin({
             patterns: [
                 {
-                    from: 'resources/tree-sitter-csound.wasm',
-                    to: './',
-                    context: 'src/web'
-                },
-                {
-                    from: 'resources/tree-sitter-queries/',
-                    to: './queries',
-                    context: 'src/web',
-                    noErrorOnMissing: true
-                },
-                {
                     from: 'resources/opcodes/',
                     to: './opcodes',
                     context: 'src/web',
@@ -122,6 +111,45 @@ const lspServerConfig = {
                 {
                     from: path.resolve(__dirname, 'node_modules/web-tree-sitter/web-tree-sitter.wasm'),
                     to: './'
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-csound/tree-sitter-csound.wasm'),
+                    to: './',
+                    context: 'src/web'
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-csound/queries'),
+                    to: './queries',
+                    context: 'src/web',
+                    noErrorOnMissing: true
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-python/tree-sitter-python.wasm'),
+                    to: './',
+                    context: 'src/web'
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-python/queries'),
+                    to: './python_queries',
+                    context: 'src/web'
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-html/tree-sitter-html.wasm'),
+                    to: './'
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-html/queries'),
+                    to: './html_queries',
+                    context: 'src/web'
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-json/tree-sitter-json.wasm'),
+                    to: './'
+                },
+                {
+                    from: path.resolve(__dirname, 'node_modules/tree-sitter-json/queries'),
+                    to: './json_queries',
+                    context: 'src/web'
                 }
             ]
         })
