@@ -22,22 +22,73 @@ async function readTextFile(uri: vscode.Uri): Promise<string> {
     }
 }
 
+async function getOpcodeInfoData(opcodesDir: vscode.Uri): Promise<Record<string, string>> {
+    const stdOpPath = vscode.Uri.joinPath(opcodesDir, 'stdlib-opcodes');
+    const pluginOpPath = vscode.Uri.joinPath(opcodesDir, 'plugins-opcodes');
+    const stdData = await vscode.workspace.fs.readDirectory(stdOpPath);
+    const pluginData = await vscode.workspace.fs.readDirectory(pluginOpPath);
+    const records: Record<string, string> = {};
+
+    // read and add std opcodes
+    for (const [entryName, entryType] of stdData) {
+        if (entryType !== vscode.FileType.File || !entryName.endsWith('.md')) { continue; }
+        const entryUri = vscode.Uri.joinPath(stdOpPath, entryName);
+        const content = await vscode.workspace.fs.readFile(entryUri);
+        const key = entryName.replace(/\.md$/, '');
+        records[key] = new TextDecoder().decode(content);
+    }
+
+    // read and add plugin opcodes
+    for (const [entryName, entryType] of pluginData) {
+        if (entryType !== vscode.FileType.File || !entryName.endsWith('.md')) { continue; }
+        const entryUri = vscode.Uri.joinPath(pluginOpPath, entryName);
+        const content = await vscode.workspace.fs.readFile(entryUri);
+        const key = entryName.replace(/\.md$/, '');
+        records[key] = new TextDecoder().decode(content);
+    }
+
+    return records;
+}
+
+async function parseJsonData(path: vscode.Uri) {
+    const text = await readTextFile(path);
+    const data = JSON.parse(text);
+    return new Map<string, any>(Object.entries(data));
+}
+
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
 export async function activate(context: vscode.ExtensionContext) {
-    const serverMain = vscode.Uri.joinPath(context.extensionUri, 'dist/web/server.js');
-    const coreWasmUri = vscode.Uri.joinPath(context.extensionUri, 'dist/web/web-tree-sitter.wasm');
-    const csoundWasmUri = vscode.Uri.joinPath(context.extensionUri, 'dist/web/tree-sitter-csound.wasm');
-    const queriesBaseUri = vscode.Uri.joinPath(context.extensionUri, 'dist/web/queries');
+    const webBaseUri = vscode.Uri.joinPath(context.extensionUri, 'dist/web');
+    const serverMain = vscode.Uri.joinPath(webBaseUri, 'server.js');
+    const coreWasmUri = vscode.Uri.joinPath(webBaseUri, 'web-tree-sitter.wasm');
+    const csoundWasmUri = vscode.Uri.joinPath(webBaseUri, 'tree-sitter-csound.wasm');
+    const queriesBaseUri = vscode.Uri.joinPath(webBaseUri, 'queries');
+    const jsonQueriesBaseUri = vscode.Uri.joinPath(webBaseUri, 'csound-json_data');
+    const opcodesQueriesBaseUri = vscode.Uri.joinPath(webBaseUri, 'opcodes');
 
     const worker =  new Worker(serverMain.toString());
 
-    const [coreData, csoundData, highlights, indents, injections] = await Promise.all([
+    const [
+        coreData,
+        csoundData,
+        highlights,
+        indents,
+        injections,
+        opCompletions,
+        flagCompletions,
+        macroCompletions,
+        opcodeQueries
+    ] = await Promise.all([
         getWasmBase64(coreWasmUri),
         getWasmBase64(csoundWasmUri),
         readTextFile(vscode.Uri.joinPath(queriesBaseUri, 'highlights.scm')),
         readTextFile(vscode.Uri.joinPath(queriesBaseUri, 'indents.scm')),
-        readTextFile(vscode.Uri.joinPath(queriesBaseUri, 'injections.scm'))
+        readTextFile(vscode.Uri.joinPath(queriesBaseUri, 'injections.scm')),
+        parseJsonData(vscode.Uri.joinPath(jsonQueriesBaseUri, 'csound.json')),
+        parseJsonData(vscode.Uri.joinPath(jsonQueriesBaseUri, 'flags.json')),
+        parseJsonData(vscode.Uri.joinPath(jsonQueriesBaseUri, 'macros.json')),
+        getOpcodeInfoData(opcodesQueriesBaseUri),
     ]);
 
     const clientOptions: LanguageClientOptions = {
@@ -50,6 +101,10 @@ export async function activate(context: vscode.ExtensionContext) {
             highlights: highlights,
             indents: indents,
             injections: injections,
+            opcodeCompletions: opCompletions,
+            flagCompletions: flagCompletions,
+            macroCompletions: macroCompletions,
+            opcodeInfos: opcodeQueries,
         }
     };
 

@@ -3,22 +3,25 @@
 
 import { SEMANTIC_TOKEN_TYPE, mapTokenToIndex, captureToTokenType } from './utils';
 import { TextDocument, TextEdit } from 'vscode-languageserver-textdocument';
-import { Parser, Language, Tree, Query } from 'web-tree-sitter';
+import { Parser, Language, Tree, Query, Point } from 'web-tree-sitter';
 import {
     createConnection,
     BrowserMessageReader,
     BrowserMessageWriter,
     TextDocuments,
-    TextDocumentSyncKind,
     InitializeResult,
     Hover,
     CompletionItem,
     CompletionItemKind,
     SemanticTokensBuilder,
-    DocumentFormattingParams
+    DocumentFormattingParams,
+    InsertTextFormat
 } from 'vscode-languageserver/browser';
 
-// TODO: resolve included files
+// TODO: resolve included .udo files
+// TODO: resolve unused and undefined vars
+// TODO: language injections
+// TODO: resolve var scope
 
 const messageReader = new BrowserMessageReader(self as any);
 const messageWriter = new BrowserMessageWriter(self as any);
@@ -40,11 +43,11 @@ function updateTree(document: TextDocument) {
     const textLines = text.split(/\r?\n/);
     const version = document.version;
 
-    const oldState = trees.get(uri);
+    const oldState = docs.get(uri);
     const newTree = parser.parse(text);
 
     if (newTree) {
-        trees.set(uri, {
+        docs.set(uri, {
             tree: newTree,
             text: text,
             textLines: textLines,
@@ -55,12 +58,17 @@ function updateTree(document: TextDocument) {
 
 let parser: Parser;
 let csoundLanguage: Language;
-let trees: Map<string, DocState> = new Map();
+let docs: Map<string, DocState> = new Map();
 
 let highlightsQuery: Query;
 let indentsQuery: Query;
 let injectionsQuery: Query;
 
+let opcodeFromManual: Record<string, string>;
+
+let jsonOpcodes: Map<string, any>;
+let jsonFlags: Map<string, any>;
+let jsonMacros: Map<string, any>;
 
 function base64ToUint8Array(base64: string | undefined): Uint8Array {
     if (!base64) {
@@ -100,6 +108,12 @@ connection.onInitialize(async (params): Promise<InitializeResult> => {
         if (options.injections) {
             injectionsQuery = new Query(csoundLanguage, options.injections);
         }
+
+        opcodeFromManual = options.opcodeInfos;
+        jsonOpcodes = options.opcodeCompletions;
+        jsonFlags = options.flagCompletions;
+        jsonMacros = options.macroCompletions;
+
         connection.console.log("Csound LSP-Web initialized!");
 
     } catch (error: any) {
@@ -122,9 +136,9 @@ connection.onInitialize(async (params): Promise<InitializeResult> => {
                 },
                 full: true
             },
-            documentOnTypeFormattingProvider: {
-                firstTriggerCharacter: '\n',
-                moreTriggerCharacter: ['n', 'f', '}']
+            completionProvider: {
+                resolveProvider: false,
+                triggerCharacters: ['.', ':', '$', '-']
             },
             documentFormattingProvider: true
         }
@@ -132,19 +146,140 @@ connection.onInitialize(async (params): Promise<InitializeResult> => {
 });
 
 documents.onDidClose(params => {
-    trees.delete(params.document.uri);
+    docs.delete(params.document.uri);
 });
 
 documents.onDidChangeContent(change => {
     updateTree(change.document);
 });
 
-// connection.onHover(({ textDocument, position }): Hover | null => {});
-// connection.onCompletion(({ textDocument, position }): CompletionItem[] => {});
+connection.onHover(({ textDocument, position }): Hover | null => {
+    const docState = docs.get(textDocument.uri);
+    if (!docState || !docState.tree) { return; }
+
+    const rootNode = docState.tree?.rootNode;
+    const nodePos: Point = { row: position.line, column: position.character };
+    const nodeAtPos = rootNode.descendantForPosition(nodePos, nodePos);
+    const nodeKind = nodeAtPos.type;
+    const nodeText = docState.text.slice(nodeAtPos.startIndex, nodeAtPos.endIndex).trim();
+
+    switch (nodeKind) {
+        case "opcode_name":
+            const doc = opcodeFromManual[nodeText];
+            if (!doc) { return null; }
+            return {
+                contents: {
+                    kind: "markdown",
+                    value: doc
+                }
+            };
+        case "identifier":
+            return;
+        default:
+            return null;
+    }
+});
+
+connection.onCompletion(({ textDocument, position }): CompletionItem[] => {
+    const docState = docs.get(textDocument.uri);
+    if (!docState || !docState.tree) { return; }
+
+    const rootNode = docState.tree?.rootNode;
+    const nodePos: Point = { row: position.line, column: position.character };
+    const nodeAtPos = rootNode.descendantForPosition(nodePos, nodePos);
+    const nodeKind = nodeAtPos.type;
+
+    switch (nodeKind) {
+        case "struct_access":
+            return;
+        default:
+            const targetLine = position.line;
+            const targetChar = position.character;
+            const textLine = docState.textLines[targetLine] || "";
+            const nodeToFindPos: Point = { row: targetLine, column: targetChar - 1 };
+            const findedNode = rootNode.descendantForPosition(nodeToFindPos, nodeToFindPos);
+            const findedNodeKind = findedNode.type;
+            const findedNodeText = findedNode.text;
+
+            let items: CompletionItem[] = [];
+            switch (findedNodeKind) {
+                case ":":
+                    const types = [
+                        "a", "i", "k", "b", "S", "f", "w",
+                        "InstrDef", "Instr", "Opcode", "OpcodeDef", "Complex"
+                    ];
+                    for (const ty of types) {
+                        items.push({
+                            label: ty,
+                            kind: CompletionItemKind.Field,
+                            insertText: ty,
+                            documentation: `Data type ${ty}`
+                        });
+                    }
+                    return items;
+                case "$":
+                    for (const [key, data] of jsonMacros) {
+                        items.push({
+                            label: key,
+                            kind: CompletionItemKind.Field,
+                            insertText: key,
+                            detail: `Value: ${data["value"]}`,
+                            documentation: `Equivalent to: ${data["equivalent_to"]}`
+                        });
+                    }
+                    return items;
+                case "flag_identifier":
+                    for (const [key, data] of jsonFlags) {
+                        const rawBody = data["body"];
+                        const dataBody = Array.isArray(rawBody) ? rawBody.join('\n') : rawBody;
+                        const sliceBody = dataBody.replace(/^--/, "");
+                        items.push({
+                            label: key,
+                            kind: CompletionItemKind.Field,
+                            insertText: sliceBody,
+                            documentation: {
+                                kind: "markdown",
+                                value: data["description"]
+                            }
+                        });
+                        }
+                default:
+                    if (findedNodeText.length) {
+                        const nodeParent = findedNode.parent;
+                        const pKind = nodeParent.type;
+                        if (
+                            pKind !== "flag_content" && pKind !== "struct_access" &&
+                            pKind !== "modern_udo_inputs" && pKind !== "ERROR" &&
+                            findedNode.type !== "legacy_udo_args"
+                        ) {
+                            for (const [key, data] of jsonOpcodes) {
+                                if (key.startsWith(findedNodeText)) {
+                                    const rawBody = data["body"];
+                                    const dataBody: string = Array.isArray(rawBody) ? rawBody.join('\n') : rawBody;
+                                    const isSnip: boolean = dataBody.includes("$");
+                                    items.push({
+                                        label: data["prefix"],
+                                        kind: isSnip
+                                            ? CompletionItemKind.Snippet
+                                            : CompletionItemKind.Function,
+                                        insertText: dataBody,
+                                        insertTextFormat: isSnip
+                                            ? InsertTextFormat.Snippet
+                                            : InsertTextFormat.PlainText,
+                                        documentation: data["description"]
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    return items;
+            }
+    }
+});
 
 connection.languages.semanticTokens.on((params) => {
     const doc = documents.get(params.textDocument.uri);
-    const docState = trees.get(params.textDocument.uri);
+    const docState = docs.get(params.textDocument.uri);
     if (!docState || !docState.tree || !highlightsQuery) { return { data: [] }; }
     if (!doc || (doc.version !== docState.version)) { return { data: [] }; }
 
@@ -215,7 +350,7 @@ connection.languages.semanticTokens.on((params) => {
 });
 
 connection.onDocumentFormatting((params: DocumentFormattingParams): TextEdit[] => {
-    const docState = trees.get(params.textDocument.uri);
+    const docState = docs.get(params.textDocument.uri);
     if (!docState || !indentsQuery) { return []; }
 
     const tree = docState?.tree;
@@ -280,7 +415,6 @@ connection.onDocumentFormatting((params: DocumentFormattingParams): TextEdit[] =
     return edits;
 
 });
-
 
 documents.listen(connection);
 connection.listen();
