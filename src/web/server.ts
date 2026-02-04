@@ -405,7 +405,7 @@ connection.onCodeLens((params: CodeLensParams): CodeLens[] => {
         }
     });
     return lenses;
-})
+});
 
 documents.listen(connection);
 connection.listen();
