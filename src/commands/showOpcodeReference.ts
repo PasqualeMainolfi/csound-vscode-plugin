@@ -28,7 +28,7 @@ export const showOpcodeReference = async () => {
     // } else {
     //   defaultPath = "html"; // Default for other OS (like Linux)
     // }
-  }   
+  }
   // Construct the URI for the HTML file
   const htmlFileUri = vscode.Uri.file(`${htmlFilePath}/${opcode}.html`);
 

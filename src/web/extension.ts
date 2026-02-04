@@ -167,14 +167,15 @@ export async function activate(context: vscode.ExtensionContext) {
     const getActiveDocumentContent = (textEditor: vscode.TextEditor): string | null => {
         const document = textEditor.document;
 
-        if (document.languageId === "csound-csd") {
-        return document.getText();
+        // maybe use the exention rather than languageId?
+        if (document.languageId === "csound") {
+            return document.getText();
         } else if (document.languageId === "csound-orc" || document.languageId === "csound-sco") {
-        // For .orc/.sco files, we need to read both files
-        const baseName = document.fileName.substring(0, document.fileName.length - 4);
-        // For now, just return the current file content with a note
-        // In a full implementation, you'd want to read both .orc and .sco files
-        return `; Note: This is ${document.languageId} content. Full .orc/.sco support needs implementation.\n${document.getText()}`;
+            // For .orc/.sco files, we need to read both files
+            const baseName = document.fileName.substring(0, document.fileName.length - 4);
+            // For now, just return the current file content with a note
+            // In a full implementation, you'd want to read both .orc and .sco files
+            return `; Note: This is ${document.languageId} content. Full .orc/.sco support needs implementation.\n${document.getText()}`;
         }
 
         return null;
@@ -208,7 +209,8 @@ export async function activate(context: vscode.ExtensionContext) {
   const playCommand = vscode.commands.registerTextEditorCommand(
     "extension.csoundPlayActiveDocument",
     async (textEditor: vscode.TextEditor) => {
-      const content = getActiveDocumentContent(textEditor);
+        const content = getActiveDocumentContent(textEditor);
+        console.log(content);
       if (content) {
         // Use relative path from workspace instead of just filename
         const relativePath = vscode.workspace.asRelativePath(textEditor.document.uri);

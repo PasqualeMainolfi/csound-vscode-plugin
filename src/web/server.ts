@@ -21,7 +21,9 @@ import {
     CompletionItemKind,
     SemanticTokensBuilder,
     DocumentFormattingParams,
-    InsertTextFormat
+    InsertTextFormat,
+    CodeLensParams,
+    CodeLens
 } from 'vscode-languageserver/browser';
 
 // TODO: resolve included .udo files
@@ -146,7 +148,10 @@ connection.onInitialize(async (params): Promise<InitializeResult> => {
                 resolveProvider: false,
                 triggerCharacters: ['.', ':', '$', '-']
             },
-            documentFormattingProvider: true
+            documentFormattingProvider: true,
+            codeLensProvider: {
+                resolveProvider: false,
+            }
         }
     };
 });
@@ -374,6 +379,33 @@ connection.onDocumentFormatting((params: DocumentFormattingParams): TextEdit[] =
     return edits;
 
 });
+
+connection.onCodeLens((params: CodeLensParams): CodeLens[] => {
+    let lenses: CodeLens[] = [];
+    lenses.push({
+        range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 0 },
+        },
+        command: {
+            title: "▶ Run",
+            command: "extension.csoundPlayActiveDocument",
+            arguments: []
+        }
+    });
+    lenses.push({
+        range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 0 },
+        },
+        command: {
+            title: "⏹ Stop",
+            command: "extension.csoundKillCsoundProcess",
+            arguments: []
+        }
+    });
+    return lenses;
+})
 
 documents.listen(connection);
 connection.listen();

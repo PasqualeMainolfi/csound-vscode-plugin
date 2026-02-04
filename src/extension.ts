@@ -79,19 +79,19 @@ export async function activate(context: vscode.ExtensionContext) {
         )
     );
 
-    context.subscriptions.push(
-        vscode.commands.registerTextEditorCommand(
-            "extension.csoundEvalOrc",
-            commands.evalOrc
-        )
-    );
+    // context.subscriptions.push(
+    //     vscode.commands.registerTextEditorCommand(
+    //         "extension.csoundEvalOrc",
+    //         commands.evalOrc
+    //     )
+    // );
 
-    context.subscriptions.push(
-        vscode.commands.registerTextEditorCommand(
-            "extension.csoundEvalSco",
-            commands.evalSco
-        )
-    );
+    // context.subscriptions.push(
+    //     vscode.commands.registerTextEditorCommand(
+    //         "extension.csoundEvalSco",
+    //         commands.evalSco
+    //     )
+    // );
 
 }
 

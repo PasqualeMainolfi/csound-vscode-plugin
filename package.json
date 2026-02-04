@@ -17,8 +17,10 @@
         "ui"
     ],
     "activationEvents": [
-        "onCommand:extension.csoundEvalSco",
-        "onCommand:extension.csoundEvalOrc"
+        "onCommand:extension.csoundPlayActiveDocument",
+        "onCommand:extension.csoundKillCsoundProcess",
+        "onCommand:extension.csoundEvalOrc",
+        "onCommand:extension.csoundEvalSco"
     ],
     "contributes": {
         "commands": [
@@ -41,6 +43,30 @@
             {
                 "command": "extension.csoundSelectExecutable",
                 "title": "Csound: Browse for Csound executable"
+            },
+            {
+                "command": "extension.csoundPlayActiveDocument",
+                "title": "Csound: Play Active Document"
+            },
+            {
+                "command": "extension.csoundKillCsoundProcess",
+                "title": "Csound: Terminate any running csound subprocess"
+            },
+            {
+                "command": "extension.csoundSelectExecutable",
+                "title": "Csound: Browse for Csound executable"
+            },
+            {
+                "command": "extension.csoundEvalOrc",
+                "title": "Csound: Evaluate Orchestra Code"
+            },
+            {
+                "command": "extension.csoundEvalSco",
+                "title": "Csound: Evaluate Score Code"
+            },
+            {
+                "command": "extension.showOpcodeReference",
+                "title": "Csound: Show Csound help"
             }
         ],
         "configuration": {
@@ -221,6 +247,17 @@
                 "command": "csound.openManual",
                 "key": "alt+m",
                 "when": "editorFocus && editorLangId == csound"
+            },
+            {
+                "command": "extension.csoundEvalOrc",
+                "key": "ctrl+enter",
+                "mac": "cmd+enter",
+                "when": "editorTextFocus"
+            },
+            {
+                "command": "extension.csoundPlayActiveDocument",
+                "key": "alt+.",
+                "when": "editorFocus"
             }
         ],
         "views": {
