@@ -244,14 +244,13 @@
                 "when": "editorFocus && editorLangId == csound"
             },
             {
-                "command": "extension.csoundEvalOrc",
-                "key": "ctrl+enter",
-                "mac": "cmd+enter",
-                "when": "editorTextFocus"
-            },
-            {
                 "command": "extension.csoundPlayActiveDocument",
                 "key": "alt+.",
+                "when": "editorFocus"
+            },
+            {
+                "command": "extension.showOpcodeReference",
+                "key": "alt+m",
                 "when": "editorFocus"
             }
         ],

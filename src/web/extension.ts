@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { CsoundWebViewProvider } from "../webview/csoundWebViewProvider";
 import { LanguageClient, LanguageClientOptions } from 'vscode-languageclient/browser';
 import { ResolveIncludedUdoRequest } from "./utils";
+import { showOpcodeReference } from "../commands/showOpcodeReference"
 
 async function getWasmBase64(uri: vscode.Uri): Promise<string> {
     const data = await vscode.workspace.fs.readFile(uri);
@@ -168,6 +169,29 @@ export async function activate(context: vscode.ExtensionContext) {
         dispose: () => client.stop()
     });
 
+    const csoundControls = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    csoundControls.text = "$(agent) Csound actions";
+    csoundControls.tooltip = "$(play-circle) Run | $(stop-circle) Stop | $(book) Manual";
+    csoundControls.command = "extension.csoundStatusBar";
+    csoundControls.show();
+
+    context.subscriptions.push(csoundControls);
+
+    vscode.commands.registerCommand("extension.csoundStatusBar", async () => {
+        const choice = vscode.window.showQuickPick([
+            { label: "$(play-circle) Run", command: "extension.csoundPlayActiveDocument" },
+            { label: "$(stop-circle) Stop", command: "extension.csoundKillCsoundProcess" },
+            { label: "$(book) Manual", command: "extension.showOpcodeReference" },
+        ], {
+            placeHolder: "Csound actions"
+        });
+        if (!(await choice)?.command) {
+            return;
+        } else {
+            vscode.commands.executeCommand((await choice)!.command);
+        }
+    });
+
     // Create and register the WebView provider
     const csoundWebViewProvider = new CsoundWebViewProvider(context.extensionUri);
 
@@ -204,10 +228,8 @@ export async function activate(context: vscode.ExtensionContext) {
     };
 
     const showOpcodeReferenceCommand = vscode.commands.registerCommand(
-        "extension.showOpcodeReference", () => {
-            vscode.window.showInformationMessage(
-                "Opcode reference not yet implemented for web. Please refer to the Csound documentation online."
-            );
+        "extension.showOpcodeReference", async () => {
+            await showOpcodeReference();
         }
     );
     context.subscriptions.push(showOpcodeReferenceCommand);
@@ -216,7 +238,6 @@ export async function activate(context: vscode.ExtensionContext) {
     const playCommand = vscode.commands.registerTextEditorCommand(
         "extension.csoundPlayActiveDocument", async (textEditor: vscode.TextEditor) => {
             const content = getActiveDocumentContent(textEditor);
-            console.log(content);
             if (content) {
                 // Use relative path from workspace instead of just filename
                 const relativePath = vscode.workspace.asRelativePath(textEditor.document.uri);

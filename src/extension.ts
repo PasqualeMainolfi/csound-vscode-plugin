@@ -42,6 +42,30 @@ export async function activate(context: vscode.ExtensionContext) {
 
     client.start();
 
+    const csoundControls = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    csoundControls.text = "$(agent) Csound actions";
+    csoundControls.tooltip = "";
+    csoundControls.command = "csound.csoundStatusBar";
+    csoundControls.show();
+
+    context.subscriptions.push(csoundControls);
+
+    vscode.commands.registerCommand("csound.csoundStatusBar", async () => {
+        const choice = vscode.window.showQuickPick([
+            { label: "$(play-circle) Run", command: "csound.runFile" },
+            { label: "$(stop-circle) Stop", command: "csound-stopExecution" },
+            { label: "$(unmute) Generate Audio File ", command: "csound-saveAsAudioFile" },
+            { label: "$(book) Manual", command: "csound.openManual" },
+        ], {
+            placeHolder: "Csound actions"
+        });
+        if (!(await choice)?.command) {
+            return;
+        } else {
+            vscode.commands.executeCommand((await choice)!.command);
+        }
+    });
+
     context.subscriptions.push({
         dispose: () => client.stop()
     });

@@ -27,8 +27,6 @@ import {
     SemanticTokensBuilder,
     DocumentFormattingParams,
     InsertTextFormat,
-    CodeLensParams,
-    CodeLens,
     Diagnostic
 } from 'vscode-languageserver/browser';
 
@@ -156,10 +154,7 @@ connection.onInitialize(async (params): Promise<InitializeResult> => {
                 resolveProvider: false,
                 triggerCharacters: ['.', ':', '$', '-']
             },
-            documentFormattingProvider: true,
-            codeLensProvider: {
-                resolveProvider: false,
-            }
+            documentFormattingProvider: true
         }
     };
 });
@@ -174,7 +169,7 @@ documents.onDidChangeContent(async (change) => {
     let diagnostics: Diagnostic[] = [];
     let cachedDiagnostics: Set<string> = new Set<string>();
     if (doc) {
-        const diagnosticReport = iterateTree(doc.tree!, jsonMacros);
+        diagnosticReport = iterateTree(doc.tree!, jsonMacros);
         doc.cachedTypedVars = diagnosticReport.typedVars;
         doc.userDefinitions = diagnosticReport.userDefinitions;
 
@@ -260,8 +255,6 @@ documents.onDidChangeContent(async (change) => {
 documents.onDidSave(async (change) => {
     let doc = docs.get(change.document.uri);
     if (doc) {
-        const diagnosticReport = iterateTree(doc.tree!, jsonMacros);
-
         for (const [udoFilePath, udoFileCaptured] of diagnosticReport.includedUdoFiles.entries()) { // move in onSave
             let pflag = false;
             try {
@@ -653,33 +646,6 @@ connection.onDocumentFormatting((params: DocumentFormattingParams): TextEdit[] =
 
     return edits;
 
-});
-
-connection.onCodeLens((params: CodeLensParams): CodeLens[] => {
-    let lenses: CodeLens[] = [];
-    lenses.push({
-        range: {
-            start: { line: 0, character: 0 },
-            end: { line: 0, character: 0 },
-        },
-        command: {
-            title: "▶ Run",
-            command: "extension.csoundPlayActiveDocument",
-            arguments: []
-        }
-    });
-    lenses.push({
-        range: {
-            start: { line: 0, character: 0 },
-            end: { line: 0, character: 0 },
-        },
-        command: {
-            title: "⏹ Stop",
-            command: "extension.csoundKillCsoundProcess",
-            arguments: []
-        }
-    });
-    return lenses;
 });
 
 documents.listen(connection);
