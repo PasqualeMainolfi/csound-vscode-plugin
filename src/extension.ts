@@ -22,7 +22,6 @@ export async function activate(context: vscode.ExtensionContext) {
         args: [],
     };
 
-
     // if (vscode.env.uiKind === vscode.UIKind.Web) {
     //     return;
     // }
@@ -31,11 +30,7 @@ export async function activate(context: vscode.ExtensionContext) {
         documentSelector: [
             { scheme: "file", language: "csound" }
         ],
-        initializationOptions: {
-            wasmUri: vscode.Uri.joinPath(context.extensionUri, "dist", "web", "tree-sitter-csound.wasm").toString(true),
-            queriesBaseUri: vscode.Uri.joinPath(context.extensionUri, "dist", "web", "queries").toString(true),
-        }
-
+        initializationOptions: { isOnWeb: false }
     };
 
     client = new LanguageClient(

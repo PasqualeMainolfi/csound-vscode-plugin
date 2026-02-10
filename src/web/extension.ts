@@ -3,10 +3,12 @@
 import * as vscode from "vscode";
 import { CsoundWebViewProvider } from "../webview/csoundWebViewProvider";
 import { LanguageClient, LanguageClientOptions } from 'vscode-languageclient/browser';
+import { ResolveIncludedUdoRequest } from "./utils";
 
 async function getWasmBase64(uri: vscode.Uri): Promise<string> {
     const data = await vscode.workspace.fs.readFile(uri);
-    let binary = '';
+    let binary = ''
+        ;
     for (let i = 0; i < data.byteLength; i++) {
         binary += String.fromCharCode(data[i]);
     }
@@ -20,6 +22,18 @@ async function readTextFile(uri: vscode.Uri): Promise<string> {
     } catch {
         return "";
     }
+}
+
+function resolveInclude(fromPath: string, includedFile: string): vscode.Uri {
+    const baseUri = vscode.Uri.parse(fromPath);
+    const lastSlash = baseUri.path.lastIndexOf('/');
+    const baseDir = baseUri.with({
+        path: baseUri.path.substring(0, lastSlash)
+    });
+    if (includedFile.startsWith('/') || includedFile.startsWith('.')) {
+        return baseUri.with({ path: includedFile });
+    }
+    return vscode.Uri.joinPath(baseDir, includedFile);
 }
 
 async function getOpcodeInfoData(opcodesDir: vscode.Uri): Promise<Record<string, string>> {
@@ -120,6 +134,7 @@ export async function activate(context: vscode.ExtensionContext) {
             { language: 'csound' },
         ],
         initializationOptions: {
+            isWeb: true,
             mainWasmUri: coreData,
             csoundWasmUri: csoundData,
             highlights: highlights,
@@ -167,17 +182,10 @@ export async function activate(context: vscode.ExtensionContext) {
     const getActiveDocumentContent = (textEditor: vscode.TextEditor): string | null => {
         const document = textEditor.document;
 
-        // maybe use the exention rather than languageId?
+        // maybe use the extension rather than languageId?
         if (document.languageId === "csound") {
             return document.getText();
-        } else if (document.languageId === "csound-orc" || document.languageId === "csound-sco") {
-            // For .orc/.sco files, we need to read both files
-            const baseName = document.fileName.substring(0, document.fileName.length - 4);
-            // For now, just return the current file content with a note
-            // In a full implementation, you'd want to read both .orc and .sco files
-            return `; Note: This is ${document.languageId} content. Full .orc/.sco support needs implementation.\n${document.getText()}`;
         }
-
         return null;
     };
 
@@ -195,71 +203,88 @@ export async function activate(context: vscode.ExtensionContext) {
         return line.text;
     };
 
-  const showOpcodeReferenceCommand = vscode.commands.registerCommand(
-    "extension.showOpcodeReference",
-    () => {
-      vscode.window.showInformationMessage(
-        "Opcode reference not yet implemented for web. Please refer to the Csound documentation online."
-      );
-    }
-  );
-  context.subscriptions.push(showOpcodeReferenceCommand);
+    const showOpcodeReferenceCommand = vscode.commands.registerCommand(
+        "extension.showOpcodeReference", () => {
+            vscode.window.showInformationMessage(
+                "Opcode reference not yet implemented for web. Please refer to the Csound documentation online."
+            );
+        }
+    );
+    context.subscriptions.push(showOpcodeReferenceCommand);
 
-  // play command - now uses WebView
-  const playCommand = vscode.commands.registerTextEditorCommand(
-    "extension.csoundPlayActiveDocument",
-    async (textEditor: vscode.TextEditor) => {
-        const content = getActiveDocumentContent(textEditor);
-        console.log(content);
-      if (content) {
-        // Use relative path from workspace instead of just filename
-        const relativePath = vscode.workspace.asRelativePath(textEditor.document.uri);
-        await csoundWebViewProvider.playCsd(content, relativePath);
+    // play command - now uses WebView
+    const playCommand = vscode.commands.registerTextEditorCommand(
+        "extension.csoundPlayActiveDocument", async (textEditor: vscode.TextEditor) => {
+            const content = getActiveDocumentContent(textEditor);
+            console.log(content);
+            if (content) {
+                // Use relative path from workspace instead of just filename
+                const relativePath = vscode.workspace.asRelativePath(textEditor.document.uri);
+                await csoundWebViewProvider.playCsd(content, relativePath);
 
-        // Show the WebView panel
-        vscode.commands.executeCommand('csound.webview.focus');
-      } else {
-        vscode.window.showErrorMessage(
-          "Please open a .csd, .orc, or .sco file to play with Csound."
-        );
-      }
-    }
-  );
-  context.subscriptions.push(playCommand);
+                // Show the WebView panel
+                vscode.commands.executeCommand('csound.webview.focus');
+            } else {
+                vscode.window.showErrorMessage(
+                    "Please open a .csd, .orc, or .sco file to play with Csound."
+                );
+            }
+        }
+    );
+    context.subscriptions.push(playCommand);
 
-  const killCommand = vscode.commands.registerTextEditorCommand(
-    "extension.csoundKillCsoundProcess",
-    () => {
-      csoundWebViewProvider.stopCsound();
-    }
-  );
-  context.subscriptions.push(killCommand);
+    const killCommand = vscode.commands.registerTextEditorCommand(
+        "extension.csoundKillCsoundProcess", () => {
+            csoundWebViewProvider.stopCsound();
+        }
+    );
+    context.subscriptions.push(killCommand);
 
-  const evalOrcCommand = vscode.commands.registerTextEditorCommand(
-    "extension.csoundEvalOrc",
-    (textEditor: vscode.TextEditor) => {
-      const content = getEvalText(textEditor);
-      if (content.trim()) {
-        csoundWebViewProvider.evalOrc(content);
-      } else {
-        vscode.window.showWarningMessage("No orchestra code selected or found.");
-      }
-    }
-  );
-  context.subscriptions.push(evalOrcCommand);
+    const evalOrcCommand = vscode.commands.registerTextEditorCommand(
+        "extension.csoundEvalOrc", (textEditor: vscode.TextEditor) => {
+            const content = getEvalText(textEditor);
+            if (content.trim()) {
+                csoundWebViewProvider.evalOrc(content);
+            } else {
+                vscode.window.showWarningMessage("No orchestra code selected or found.");
+            }
+        }
+    );
+    context.subscriptions.push(evalOrcCommand);
 
-  const evalScoCommand = vscode.commands.registerTextEditorCommand(
-    "extension.csoundEvalSco",
-    (textEditor: vscode.TextEditor) => {
-      const content = getEvalText(textEditor);
-      if (content.trim()) {
-        csoundWebViewProvider.evalSco(content);
-      } else {
-        vscode.window.showWarningMessage("No score code selected or found.");
-      }
-    }
-  );
-  context.subscriptions.push(evalScoCommand);
+    const evalScoCommand = vscode.commands.registerTextEditorCommand(
+        "extension.csoundEvalSco", (textEditor: vscode.TextEditor) => {
+            const content = getEvalText(textEditor);
+            if (content.trim()) {
+                csoundWebViewProvider.evalSco(content);
+            } else {
+                vscode.window.showWarningMessage("No score code selected or found.");
+            }
+        }
+    );
+    context.subscriptions.push(evalScoCommand);
+
+    client.onRequest("csound-lsp/resolveIncludedUdo", async (params: ResolveIncludedUdoRequest) => {
+        const result = resolveInclude(params.documentPath, params.udoPath);
+        try {
+            const fileByte = await vscode.workspace.fs.readFile(result);
+            const baseName = result.toString().replace(/[\//]+$/, "").split(/[\//]/).pop() ?? result.toString();
+            const content = new TextDecoder().decode(fileByte);
+            const hashInit = await crypto.subtle.digest("SHA-256", fileByte);
+            const hashString = [...new Uint8Array(hashInit)]
+                .map(b => b.toString(16).padStart(2, '0'))
+                .join("");
+            return {
+                uri: result.toString(),
+                content: content,
+                contentHash: hashString,
+                pathBaseName: baseName
+            }
+        } catch (err) {
+            console.error(`Something went wrong while reading .udo file: ${err}`);
+        }
+    });
+
 }
 
 // this method is called when your extension is deactivated

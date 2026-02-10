@@ -1,13 +1,18 @@
 /// <reference lib="webworker" />
 /// <reference lib="dom" />
 
+import { DiagnosticSeverity, DiagnosticTag, TextDocumentSyncKind } from 'vscode-languageserver';
 import { TextDocument, TextEdit } from 'vscode-languageserver-textdocument';
-import { Parser, Language, Tree, Query, Point } from 'web-tree-sitter';
-import { updateTree, DocState } from './parser';
+import { Parser, Language, Query, Point } from 'web-tree-sitter';
+import { updateTree, DocState, iterateTree, parseUdoFile, TreeReport } from './parser';
 import {
     SEMANTIC_TOKEN_TYPE,
     getSemanticTokens,
-    getInjections
+    getInjections,
+    getUnusedLabelFromKind,
+    getUndefinedLabelFromKind,
+    getCleanNodeText,
+    ResolveIncludedUdoResult
 } from './utils';
 
 import {
@@ -23,12 +28,9 @@ import {
     DocumentFormattingParams,
     InsertTextFormat,
     CodeLensParams,
-    CodeLens
+    CodeLens,
+    Diagnostic
 } from 'vscode-languageserver/browser';
-
-// TODO: resolve included .udo files
-// TODO: resolve unused and undefined vars
-// TODO: resolve var scope
 
 const messageReader = new BrowserMessageReader(self as any);
 const messageWriter = new BrowserMessageWriter(self as any);
@@ -51,6 +53,8 @@ let jsonFlags: Map<string, any>;
 let jsonMacros: Map<string, any>;
 
 let injectedLanguages: Record<string, { parser: Parser, query: Query }> = {};
+
+let diagnosticReport: TreeReport;
 
 function base64ToUint8Array(base64: string | undefined): Uint8Array {
     if (!base64) {
@@ -135,7 +139,11 @@ connection.onInitialize(async (params): Promise<InitializeResult> => {
 
     return {
         capabilities: {
-            textDocumentSync: 1,
+            textDocumentSync: {
+                openClose: true,
+                change: TextDocumentSyncKind.Full,
+                save: true
+            },
             hoverProvider: true,
             semanticTokensProvider: {
                 legend: {
@@ -160,8 +168,142 @@ documents.onDidClose(params => {
     docs.delete(params.document.uri);
 });
 
-documents.onDidChangeContent(change => {
+documents.onDidChangeContent(async (change) => {
     updateTree(parser, change.document, docs);
+    let doc = docs.get(change.document.uri);
+    let diagnostics: Diagnostic[] = [];
+    let cachedDiagnostics: Set<string> = new Set<string>();
+    if (doc) {
+        const diagnosticReport = iterateTree(doc.tree, jsonMacros);
+        doc.cachedTypedVars = diagnosticReport.typedVars;
+        doc.userDefinitions = diagnosticReport.userDefinitions;
+
+        for (const varRef of doc.userDefinitions.userUnusedVars) {
+            const findedNode = doc
+                .tree
+                .rootNode
+                .descendantForIndex(varRef.nodeLocation, varRef.nodeLocation);
+
+            const pKind = findedNode.parent?.type || "";
+            const currentDiagnostic: Diagnostic = {
+                range: {
+                    start: {
+                        line: findedNode.startPosition.row,
+                        character: findedNode.startPosition.column
+                    },
+                    end: {
+                        line: findedNode.endPosition.row,
+                        character: findedNode.endPosition.column
+                    }
+                },
+                severity: DiagnosticSeverity.Hint,
+                source: "csound-lsp",
+                message: getUnusedLabelFromKind(pKind),
+                tags: [DiagnosticTag.Unnecessary]
+            };
+
+            const diagKey = `${currentDiagnostic.range.start.line}-${currentDiagnostic.range.end.character}-${currentDiagnostic.message}`;
+            if (!cachedDiagnostics.has(diagKey)) {
+                cachedDiagnostics.add(diagKey);
+                diagnostics.push(currentDiagnostic);
+            };
+        };
+
+        for (const varRef of doc.userDefinitions.userUndefinedVars) {
+            const findedNode = doc
+                .tree
+                .rootNode
+                .descendantForIndex(varRef.nodeLocation, varRef.nodeLocation);
+
+            const pKind = findedNode.parent?.type || "";
+            for (const nodeRange of varRef.references) {
+                let pflag = pKind === "macro_usage"; // need to check if var is in udo file
+                if (!pflag) {
+                    const currentDiagnostic: Diagnostic = {
+                        range: {
+                            start: {
+                                line: nodeRange.startPosition.row,
+                                character: nodeRange.startPosition.column
+                            },
+                            end: {
+                                line: nodeRange.endPosition.row,
+                                character: nodeRange.endPosition.column
+                            }
+                        },
+                        severity: DiagnosticSeverity.Error,
+                        source: "csound-lsp",
+                        message: getUndefinedLabelFromKind(pKind),
+                        tags: []
+                    };
+
+                    const diagKey = `${currentDiagnostic.range.start.line}-${currentDiagnostic.range.end.character}-${currentDiagnostic.message}`;
+                    if (!cachedDiagnostics.has(diagKey)) {
+                        cachedDiagnostics.add(diagKey);
+                        diagnostics.push(currentDiagnostic);
+                    };
+                }
+            }
+        }
+
+    }
+
+    connection.sendDiagnostics({
+        uri: change.document.uri,
+        diagnostics: diagnostics
+    });
+
+});
+
+documents.onDidSave(async (change) => {
+    let doc = docs.get(change.document.uri);
+    if (doc) {
+        const diagnosticReport = iterateTree(doc.tree, jsonMacros);
+
+        for (const [udoFilePath, udoFileCaptured] of diagnosticReport.includedUdoFiles.entries()) { // move in onSave
+            let pflag = false;
+            try {
+                const result = await connection.sendRequest<ResolveIncludedUdoResult>("csound-lsp/resolveIncludedUdo", {
+                    documentPath: change.document.uri,
+                    udoPath: udoFilePath
+                });
+
+                if (result && result.content) {
+                    let udoFile = doc.cachedIncludedUdoFiles.get(udoFilePath);
+                    if (udoFile && udoFile.contentHash !== result.contentHash) {
+                        udoFile.content = result.content;
+                        udoFile.contentHash = result.contentHash;
+                        pflag = true;
+                    } else {
+                        udoFileCaptured.content = result.content;
+                        udoFileCaptured.contentHash = result.contentHash;
+                        udoFileCaptured.fileName = result.pathBaseName;
+                        doc.cachedIncludedUdoFiles.set(udoFilePath, udoFileCaptured);
+                        pflag = true
+                    }
+                };
+
+                if (pflag) {
+                    let cachedUdoFile = doc.cachedIncludedUdoFiles.get(udoFilePath);
+                    if (cachedUdoFile) {
+                        parseUdoFile(cachedUdoFile, parser);
+                    } else {
+                        connection.console.warn("Something went wrong while parsing .udo file...");
+                    }
+                }
+
+            } catch (err) {
+                connection.console.warn(`Something went wrong in resolve .udo file: ${err}`);
+            }
+        }
+
+        const udoToRemoveFromCache = Array.from(doc.cachedIncludedUdoFiles.keys())
+            .filter(k => !diagnosticReport.includedUdoFiles.has(k));
+
+        for (const udoToRemoveKey of udoToRemoveFromCache) {
+            doc.cachedIncludedUdoFiles.delete(udoToRemoveKey);
+        }
+    }
+
 });
 
 connection.onHover(({ textDocument, position }): Hover | null => {
@@ -170,22 +312,84 @@ connection.onHover(({ textDocument, position }): Hover | null => {
 
     const rootNode = docState.tree?.rootNode;
     const nodePos: Point = { row: position.line, column: position.character };
-    const nodeAtPos = rootNode.descendantForPosition(nodePos, nodePos);
-    const nodeKind = nodeAtPos.type;
-    const nodeText = docState.text.slice(nodeAtPos.startIndex, nodeAtPos.endIndex).trim();
+    const currentNode = rootNode.descendantForPosition(nodePos, nodePos);
+    const nodeKind = currentNode.type;
+    const nodeText = docState.text.slice(currentNode.startIndex, currentNode.endIndex).trim();
+    const opName = getCleanNodeText(nodeText);
 
     switch (nodeKind) {
         case "opcode_name":
-            const doc = opcodeFromManual[nodeText];
-            if (!doc) { return null; }
-            return {
-                contents: {
-                    kind: "markdown",
-                    value: doc
+            const doc = opcodeFromManual[opName];
+            if (doc) {
+                return {
+                    contents: {
+                        kind: "markdown",
+                        value: doc
+                    }
+                };
+            }
+            const localUdo = docState.userDefinitions.userDefinedOpcodes.get(opName);
+            if (localUdo) {
+                const md = `## User-Defined Opcode\n\`\`\`csound\n${localUdo.signature}\n\`\`\``;
+                return {
+                    contents: {
+                        kind: "markdown",
+                        value: md
+                    }
+                };
+            }
+            for (const udoFile of docState.cachedIncludedUdoFiles.values()) {
+                const ud = udoFile.userDefinedOpcodes.get(opName);
+                if (ud) {
+                    const md = `## User-Defined Opcode (imported from ${udoFile.fileName})\n\`\`\`csound\n${ud.signature}\n\`\`\``;
+                    return {
+                        contents: {
+                            kind: "markdown",
+                            value: md
+                        }
+                    };
                 }
-            };
+            }
+            return null;
         case "identifier":
-            return;
+            const nodeParent = currentNode.parent;
+            const isType = nodeParent && ["typed_identifier", "typed_identifier"].includes(nodeParent.type);
+            let childTypeName = getCleanNodeText(currentNode.text) ?? "";
+            if (isType) {
+                const sd = docState.userDefinitions.userDefinedTypes.get(childTypeName);
+                if (sd) {
+                    const md = `## User-Defined Type\n\`\`\`csound\n${sd.udtFormat}\n\`\`\``;
+                    return {
+                        contents: {
+                            kind: "markdown",
+                            value: md
+                        }
+                    };
+                }
+                const opTypedName = opcodeFromManual[childTypeName];
+                if (opTypedName) {
+                    return {
+                        contents: {
+                            kind: "markdown",
+                            value: opTypedName
+                        }
+                    };
+                }
+                for (const udoFile of docState.cachedIncludedUdoFiles.values()) {
+                    const sd = udoFile.userDefinedTypes.get(opName);
+                    if (sd) {
+                        const md = `## User-Defined Type (imported from ${udoFile.fileName})\n\`\`\`csound\n${sd.udtFormat}\n\`\`\``;
+                        return {
+                            contents: {
+                                kind: "markdown",
+                                value: md
+                            }
+                        };
+                    }
+                }
+            } else {
+                return null;
+            }
         default:
             return null;
     }
@@ -196,96 +400,158 @@ connection.onCompletion(({ textDocument, position }): CompletionItem[] => {
     if (!docState || !docState.tree) { return; }
 
     const rootNode = docState.tree?.rootNode;
-    const nodePos: Point = { row: position.line, column: position.character };
+    const nodePos: Point = { row: position.line, column: position.character - 1};
     const nodeAtPos = rootNode.descendantForPosition(nodePos, nodePos);
     const nodeKind = nodeAtPos.type;
+    const findedNodeText = nodeAtPos.text;
 
+    let items: CompletionItem[] = [];
     switch (nodeKind) {
-        case "struct_access":
-            return;
+        case ":":
+            const types = [
+                "a", "i", "k", "b", "S", "f", "w",
+                "InstrDef", "Instr", "Opcode", "OpcodeDef", "Complex"
+            ];
+            for (const ty of types) {
+                items.push({
+                    label: ty,
+                    kind: CompletionItemKind.Field,
+                    insertText: ty,
+                    documentation: `Data type ${ty}`
+                });
+            }
+            for (const udoFile of docState.cachedIncludedUdoFiles.values()) {
+                for (const udtName of udoFile.typeList) {
+                    const structDoc = `Data type ${udtName} (from ${udoFile.fileName})`;
+                    items.push({
+                        label: udtName,
+                        kind: CompletionItemKind.Field,
+                        detail: udtName,
+                        insertText: udtName,
+                        documentation: structDoc
+                    });
+                }
+            }
+            return items;
+        case "$":
+            for (const [key, data] of jsonMacros) {
+                items.push({
+                    label: key,
+                    kind: CompletionItemKind.Field,
+                    insertText: key,
+                    detail: `Value: ${data["value"]}`,
+                    documentation: `Equivalent to: ${data["equivalent_to"]}`
+                });
+            }
+            for (const udoFile of docState.cachedIncludedUdoFiles.values()) {
+                for (const includedMacro of udoFile.userDefinedMacros.values()) {
+                    const macroDoc = `User-Defined macro (from ${udoFile.fileName})`;
+                    items.push({
+                        label: includedMacro.macroLabel,
+                        kind: CompletionItemKind.Field,
+                        detail: `# ${includedMacro.macroValue} #`,
+                        insertText: includedMacro.macroName,
+                        documentation: macroDoc
+                    });
+                }
+            }
+            for (const userMacro of docState.userDefinitions.userDefinedMacros.values()) {
+                items.push({
+                    label: userMacro.macroLabel,
+                    kind: CompletionItemKind.Field,
+                    detail: `# ${userMacro.macroValue} #`,
+                    insertText: userMacro.macroName,
+                    documentation: "User-Defined macro"
+                });
+            }
+            return items;
+        case "flag_identifier":
+            for (const [key, data] of jsonFlags) {
+                const rawBody = data["body"];
+                const dataBody = Array.isArray(rawBody) ? rawBody.join('\n') : rawBody;
+                const sliceBody = dataBody.replace(/^--/, "");
+                items.push({
+                    label: key,
+                    kind: CompletionItemKind.Field,
+                    insertText: sliceBody,
+                    documentation: {
+                        kind: "markdown",
+                        value: data["description"]
+                    }
+                });
+            }
+            return items;
         default:
-            const targetLine = position.line;
-            const targetChar = position.character;
-            const textLine = docState.textLines[targetLine] || "";
-            const nodeToFindPos: Point = { row: targetLine, column: targetChar - 1 };
-            const findedNode = rootNode.descendantForPosition(nodeToFindPos, nodeToFindPos);
-            const findedNodeKind = findedNode.type;
-            const findedNodeText = findedNode.text;
+            const nodeParent = nodeAtPos.parent;
+            const pKind = nodeParent.type;
 
-            let items: CompletionItem[] = [];
-            switch (findedNodeKind) {
-                case ":":
-                    const types = [
-                        "a", "i", "k", "b", "S", "f", "w",
-                        "InstrDef", "Instr", "Opcode", "OpcodeDef", "Complex"
-                    ];
-                    for (const ty of types) {
-                        items.push({
-                            label: ty,
-                            kind: CompletionItemKind.Field,
-                            insertText: ty,
-                            documentation: `Data type ${ty}`
-                        });
-                    }
-                    return items;
-                case "$":
-                    for (const [key, data] of jsonMacros) {
-                        items.push({
-                            label: key,
-                            kind: CompletionItemKind.Field,
-                            insertText: key,
-                            detail: `Value: ${data["value"]}`,
-                            documentation: `Equivalent to: ${data["equivalent_to"]}`
-                        });
-                    }
-                    return items;
-                case "flag_identifier":
-                    for (const [key, data] of jsonFlags) {
-                        const rawBody = data["body"];
-                        const dataBody = Array.isArray(rawBody) ? rawBody.join('\n') : rawBody;
-                        const sliceBody = dataBody.replace(/^--/, "");
-                        items.push({
-                            label: key,
-                            kind: CompletionItemKind.Field,
-                            insertText: sliceBody,
-                            documentation: {
-                                kind: "markdown",
-                                value: data["description"]
-                            }
-                        });
-                    }
-                    return items;
-                default:
-                    if (findedNodeText.length) {
-                        const nodeParent = findedNode.parent;
-                        const pKind = nodeParent.type;
-                        if (
-                            pKind !== "flag_content" && pKind !== "struct_access" &&
-                            pKind !== "modern_udo_inputs" && pKind !== "ERROR" &&
-                            findedNode.type !== "legacy_udo_args"
-                        ) {
-                            for (const [key, data] of jsonOpcodes) {
-                                if (key.startsWith(findedNodeText)) {
-                                    const rawBody = data["body"];
-                                    const dataBody: string = Array.isArray(rawBody) ? rawBody.join('\n') : rawBody;
-                                    const isSnip: boolean = dataBody.includes("$");
+            switch (pKind) {
+                case "struct_access":
+                    const childStruct = nodeParent.childForFieldName("called_struct");
+                    if (childStruct) {
+                        const sName = getCleanNodeText(childStruct.text);
+                        if (sName.length > 0) {
+                            const structTypeName = docState.cachedTypedVars.get(sName) ?? "";
+                            const members = docState.userDefinitions.userDefinedTypes.get(structTypeName)?.udtMembers;
+                            if (members) {
+                                for (const member of members) {
+                                    const structDoc = `Field od struct ${sName} (Type: ${structTypeName})`;
                                     items.push({
-                                        label: data["prefix"],
-                                        kind: isSnip
-                                            ? CompletionItemKind.Snippet
-                                            : CompletionItemKind.Function,
-                                        insertText: dataBody,
-                                        insertTextFormat: isSnip
-                                            ? InsertTextFormat.Snippet
-                                            : InsertTextFormat.PlainText,
-                                        documentation: data["description"]
+                                        label: member.name,
+                                        kind: CompletionItemKind.Field,
+                                        detail: `: ${member.type}`,
+                                        insertText: member.name,
+                                        documentation: structDoc
                                     });
+                                }
+                            }
+
+                            for (const udoFile of docState.cachedIncludedUdoFiles.values()) {
+                                const udt = udoFile.userDefinedTypes.get(structTypeName);
+                                const members = udt?.udtMembers;
+                                if (members) {
+                                    for (const member of members) {
+                                        const structDoc = `Field od struct ${sName} (Type: ${structTypeName}) (from ${udoFile.path})`;
+                                        items.push({
+                                            label: member.name,
+                                            kind: CompletionItemKind.Field,
+                                            detail: `: ${member.type}`,
+                                            insertText: member.name,
+                                            documentation: structDoc
+                                        });
+                                    }
                                 }
                             }
                         }
                     }
                     return items;
-            }
+                default:
+                    if (
+                        pKind !== "flag_content" && pKind !== "struct_access" &&
+                        pKind !== "modern_udo_inputs" && pKind !== "ERROR" &&
+                        nodeAtPos.type !== "legacy_udo_args"
+                    ) {
+                        for (const [key, data] of jsonOpcodes) {
+                            if (key.startsWith(findedNodeText)) {
+                                const rawBody = data["body"];
+                                const dataBody: string = Array.isArray(rawBody) ? rawBody.join('\n') : rawBody;
+                                const isSnip: boolean = dataBody.includes("$");
+                                items.push({
+                                    label: data["prefix"],
+                                    kind: isSnip
+                                        ? CompletionItemKind.Snippet
+                                        : CompletionItemKind.Function,
+                                    insertText: dataBody,
+                                    insertTextFormat: isSnip
+                                        ? InsertTextFormat.Snippet
+                                        : InsertTextFormat.PlainText,
+                                    documentation: data["description"]
+                                });
+                            }
+                        }
+                    }
+                }
+                return items;
     }
 });
 

@@ -16,12 +16,7 @@
         "workspace",
         "ui"
     ],
-    "activationEvents": [
-        "onCommand:extension.csoundPlayActiveDocument",
-        "onCommand:extension.csoundKillCsoundProcess",
-        "onCommand:extension.csoundEvalOrc",
-        "onCommand:extension.csoundEvalSco"
-    ],
+    "activationEvents": [],
     "contributes": {
         "commands": [
             {

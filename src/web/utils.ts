@@ -1,4 +1,16 @@
-import { Parser, Query, QueryCapture, Tree, Node } from "web-tree-sitter";
+import { Parser, Query, Tree, Node } from "web-tree-sitter";
+
+export interface ResolveIncludedUdoRequest {
+    documentPath: string,
+    udoPath: string
+}
+
+export interface ResolveIncludedUdoResult {
+    uri: string,
+    content: string,
+    contentHash: string,
+    pathBaseName: string
+}
 
 export const SEMANTIC_TOKEN_TYPE = [
     "decorator",
@@ -193,4 +205,33 @@ export function getInjections(
         }
     }
     return allInjections;
+}
+
+export function getUnusedLabelFromKind(kind: string): string {
+    switch (kind) {
+        case "label_statement":
+            return "Unused label";
+        case "macro_ussage":
+            return "Unused macro";
+        default:
+            return "Unused variable";
+    }
+}
+
+export function getUndefinedLabelFromKind(kind: string): string {
+    switch (kind) {
+        case "label_statement":
+            return "Undefined label";
+        case "macro_ussage":
+            return "Undefined macro";
+        default:
+            return "Undefined variable";
+    }
+}
+
+export function getCleanNodeText(nodeText: string) {
+    let nodeClean = nodeText.trim();
+    let lastIndexChar = nodeClean.lastIndexOf(":");
+    lastIndexChar = lastIndexChar === -1 ? nodeClean.length : lastIndexChar;
+    return nodeClean.slice(0, lastIndexChar);
 }
