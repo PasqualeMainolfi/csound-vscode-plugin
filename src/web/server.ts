@@ -174,15 +174,17 @@ documents.onDidChangeContent(async (change) => {
     let diagnostics: Diagnostic[] = [];
     let cachedDiagnostics: Set<string> = new Set<string>();
     if (doc) {
-        const diagnosticReport = iterateTree(doc.tree, jsonMacros);
+        const diagnosticReport = iterateTree(doc.tree!, jsonMacros);
         doc.cachedTypedVars = diagnosticReport.typedVars;
         doc.userDefinitions = diagnosticReport.userDefinitions;
 
         for (const varRef of doc.userDefinitions.userUnusedVars) {
             const findedNode = doc
-                .tree
+                .tree!
                 .rootNode
                 .descendantForIndex(varRef.nodeLocation, varRef.nodeLocation);
+
+            if (!findedNode) { continue; }
 
             const pKind = findedNode.parent?.type || "";
             const currentDiagnostic: Diagnostic = {
@@ -211,9 +213,11 @@ documents.onDidChangeContent(async (change) => {
 
         for (const varRef of doc.userDefinitions.userUndefinedVars) {
             const findedNode = doc
-                .tree
+                .tree!
                 .rootNode
                 .descendantForIndex(varRef.nodeLocation, varRef.nodeLocation);
+
+            if (!findedNode) { continue; }
 
             const pKind = findedNode.parent?.type || "";
             for (const nodeRange of varRef.references) {
@@ -244,7 +248,6 @@ documents.onDidChangeContent(async (change) => {
                 }
             }
         }
-
     }
 
     connection.sendDiagnostics({
@@ -257,7 +260,7 @@ documents.onDidChangeContent(async (change) => {
 documents.onDidSave(async (change) => {
     let doc = docs.get(change.document.uri);
     if (doc) {
-        const diagnosticReport = iterateTree(doc.tree, jsonMacros);
+        const diagnosticReport = iterateTree(doc.tree!, jsonMacros);
 
         for (const [udoFilePath, udoFileCaptured] of diagnosticReport.includedUdoFiles.entries()) { // move in onSave
             let pflag = false;
@@ -308,11 +311,14 @@ documents.onDidSave(async (change) => {
 
 connection.onHover(({ textDocument, position }): Hover | null => {
     const docState = docs.get(textDocument.uri);
-    if (!docState || !docState.tree) { return; }
+    if (!docState || !docState.tree) { return null; }
 
-    const rootNode = docState.tree?.rootNode;
+    const rootNode = docState.tree!.rootNode;
     const nodePos: Point = { row: position.line, column: position.character };
     const currentNode = rootNode.descendantForPosition(nodePos, nodePos);
+
+    if (!currentNode) { return null; }
+
     const nodeKind = currentNode.type;
     const nodeText = docState.text.slice(currentNode.startIndex, currentNode.endIndex).trim();
     const opName = getCleanNodeText(nodeText);
@@ -396,16 +402,19 @@ connection.onHover(({ textDocument, position }): Hover | null => {
 });
 
 connection.onCompletion(({ textDocument, position }): CompletionItem[] => {
+    let items: CompletionItem[] = [];
     const docState = docs.get(textDocument.uri);
-    if (!docState || !docState.tree) { return; }
+    if (!docState || !docState.tree) { return items; }
 
     const rootNode = docState.tree?.rootNode;
     const nodePos: Point = { row: position.line, column: position.character - 1};
     const nodeAtPos = rootNode.descendantForPosition(nodePos, nodePos);
+
+    if (!nodeAtPos) { return items; }
+
     const nodeKind = nodeAtPos.type;
     const findedNodeText = nodeAtPos.text;
 
-    let items: CompletionItem[] = [];
     switch (nodeKind) {
         case ":":
             const types = [
@@ -483,11 +492,11 @@ connection.onCompletion(({ textDocument, position }): CompletionItem[] => {
             return items;
         default:
             const nodeParent = nodeAtPos.parent;
-            const pKind = nodeParent.type;
+            const pKind = nodeParent?.type ?? "";
 
             switch (pKind) {
                 case "struct_access":
-                    const childStruct = nodeParent.childForFieldName("called_struct");
+                    const childStruct = nodeParent?.childForFieldName("called_struct");
                     if (childStruct) {
                         const sName = getCleanNodeText(childStruct.text);
                         if (sName.length > 0) {

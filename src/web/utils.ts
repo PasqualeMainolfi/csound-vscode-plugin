@@ -184,7 +184,7 @@ export function getInjections(
     let allInjections: SemToken[] = [];
     for (const capture of injectionsCaptures) {
         if (capture.name === "injection.content") {
-            let langName = capture.setProperties["injection.language"];
+            let langName = capture.setProperties?.["injection.language"];
 
             if (!langName) { continue; }
 
@@ -193,7 +193,7 @@ export function getInjections(
             const nodeContent = node.text;
             const subTree = lang.parser.parse(nodeContent);
 
-            const currentTokens = getSemanticTokens(lang.query, subTree, nodeContent);
+            const currentTokens = getSemanticTokens(lang.query, subTree!, nodeContent);
             for (const token of currentTokens) {
                 const absoluteLine = node.startPosition.row + token.line;
                 const absoluteChar = (token.line === 0)

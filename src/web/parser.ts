@@ -163,12 +163,13 @@ export function parseUdoFile(udoFile: UdoFile, parser: Parser) {
     const content = udoFile.content;
     if (content) {
         const tree = parser.parse(content);
-        const rootNode = tree.rootNode;
+        const rootNode = tree?.rootNode;
+        if (!rootNode) { return; }
         let toVisit: Node[] = [rootNode];
         let userLocalDefinitions = initializeUserDefinitions();
 
         while (toVisit.length > 0) {
-            let currentNode = toVisit.pop();
+            let currentNode = toVisit.pop()!;
             const cKind = currentNode.type;
             switch (cKind) {
                 case "udo_definition_legacy":
@@ -277,7 +278,7 @@ function initializeUserDefinitions(): UserDefinitions {
     };
 }
 
-function initializeTreeReport() {
+function initializeTreeReport(): TreeReport {
     return {
         opcodes: [],
         types: [],
@@ -307,14 +308,14 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                     if (nodeExplicitType.type === "identifier") {
                         report.types.push(nodeExplicitType);
                     }
-                    const name = nodeName.text;
+                    const name = nodeName?.text ?? "";
                     const ty = nodeExplicitType.text;
                     report.typedVars.set(name, ty);
 
-                    const isStructField = currentParent.type === "struct_definition"
+                    const isStructField = currentParent?.type === "struct_definition"
                         ? true
                         : false;
-                    const isOpcodeName = currentParent.type === "opcode_name"
+                    const isOpcodeName = currentParent?.type === "opcode_name"
                         ? true
                         : false;
                     if (!isStructField && !isOpcodeName) {
@@ -324,7 +325,7 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                 break;
             case "identifier":
             case "type_identifier_legacy":
-                const pk = currentParent.type;
+                const pk = currentParent?.type ?? "";
                 const shouldSkip = (
                     pk === "ERROR" ||
                     pk === "typed_identifier" ||
@@ -333,10 +334,10 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                     pk === "macro_args" ||
                     pk === "flag_content" ||
                     pk === "instrument_definition" ||
-                    (pk === "struct_access" && currentParent.childForFieldName("struct_member")?.id === currentNode.id) ||
-                    (pk === "opcode_statement" && currentParent.childForFieldName("op")?.id === currentNode.id) ||
-                    (pk === "opcode_statement" && currentParent.childForFieldName("op_macro")?.id === currentNode.id) ||
-                    (pk === "function_call" && currentParent.childForFieldName("function")?.id === currentNode.id)
+                    (pk === "struct_access" && currentParent?.childForFieldName("struct_member")?.id === currentNode.id) ||
+                    (pk === "opcode_statement" && currentParent?.childForFieldName("op")?.id === currentNode.id) ||
+                    (pk === "opcode_statement" && currentParent?.childForFieldName("op_macro")?.id === currentNode.id) ||
+                    (pk === "function_call" && currentParent?.childForFieldName("function")?.id === currentNode.id)
                 );
 
                 if (!shouldSkip) {
@@ -491,7 +492,7 @@ function findScope(node: Node, udt: Map<string, UserDefinedType>): Scope {
         switch (currentKind) {
             case "score_block":
             case "cs_score":
-                const pflag = node.parent.type === "macro_name";
+                const pflag = node.parent?.type === "macro_name" ?? false;
                 if (pflag) {
                     return { kind: "GLOBAL" };
                 }
@@ -503,8 +504,11 @@ function findScope(node: Node, udt: Map<string, UserDefinedType>): Scope {
                 break;
         }
 
-        currentNode = currentNode.parent;
-        if (!currentNode) { break; }
+        if (currentNode.parent) {
+            currentNode = currentNode.parent;
+        } else {
+            break;
+        }
     }
     return { kind: "GLOBAL" };
 }
@@ -514,8 +518,10 @@ function isValidNotDefinedArg(node: Node, udt: Map<string, UserDefinedType>): bo
     const childField = node.childForFieldName("outputs");
     if (childField) {
         let varData = getVariableDataType(childField, udt);
-        if ((varData.dataType.kind === "OPCODE" || varData.dataType.kind === "INSTR") && varData.isArray) {
-            return true;
+        if (varData) {
+            if ((varData.dataType.kind === "OPCODE" || varData.dataType.kind === "INSTR") && varData.isArray) {
+                return true;
+            }
         }
         return false;
     }
@@ -533,7 +539,7 @@ function getUdoDataType(argList: string): VariableData[] {
     }
 
     let data: VariableData[] = [];
-    const tokens = trimmed.match(/[ijkaopOKVJSbfw](?:\[\])*/g);
+    const tokens = trimmed.match(/[ijkaopOKVJSbfw](?:\[\])*/g) || [];
     for (const token of tokens) {
         const baseType = Array.from(token).find(c => /\p{L}/u.test(c)) ?? "";
         const dimension = token.match(/\[\]/g)?.length ?? 0;
@@ -745,7 +751,7 @@ function updateVarUse(node: Node, udv: Map<string, UserDefinedVariable>, noDefAr
                 if (variable.isUndefined) { variable.references.push(nodeRange); }
                 break;
             case AccessVariableType.write:
-                const pkind = node.parent.type;
+                const pkind = node.parent?.type ?? "";
                 if (pkind === "label_statement") { variable.references = []; }
                 variable.isUndefined = false;
                 variable.nodeLocation = node.startIndex;
@@ -795,7 +801,7 @@ function getAccessType(node: Node, udt: Map<string, UserDefinedType>): AccessVar
 
         if (currentNode.type === "identifier" && pkind === "argument_list") {
             const gparent = parent.parent;
-            if (gparent.type === "opcode_statement" && isValidNotDefinedArg(gparent, udt)) {
+            if (gparent && (gparent.type === "opcode_statement") && isValidNotDefinedArg(gparent, udt)) {
                 return AccessVariableType.withoutDefinition;
             }
         }
@@ -985,7 +991,7 @@ function addUserDefinedOpcode(node: Node, key: string, udef: UserDefinitions) {
             formats.push(outText);
         }
 
-        let udoInfo = [];
+        let udoInfo: any[] = [];
         switch (node.type) {
             case "udo_definition_legacy":
                 const formLeg = `opcode ${key} ${formats[1]}, ${formats[0]}`;
