@@ -274,7 +274,7 @@ documents.onDidSave(async (change) => {
                         udoFileCaptured.contentHash = result.contentHash;
                         udoFileCaptured.fileName = result.pathBaseName;
                         doc.cachedIncludedUdoFiles.set(udoFilePath, udoFileCaptured);
-                        pflag = true
+                        pflag = true;
                     }
                 };
 
@@ -352,7 +352,7 @@ connection.onHover(({ textDocument, position }): Hover | null => {
             return null;
         case "identifier":
             const nodeParent = currentNode.parent;
-            const isType = nodeParent && ["typed_identifier", "typed_identifier"].includes(nodeParent.type);
+            const isType = nodeParent && ["typed_identifier", "type_identifier"].includes(nodeParent.type);
             let childTypeName = getCleanNodeText(currentNode.text) ?? "";
             if (isType) {
                 const sd = docState.userDefinitions.userDefinedTypes.get(childTypeName);

@@ -4,7 +4,7 @@ import * as vscode from "vscode";
 import { CsoundWebViewProvider } from "../webview/csoundWebViewProvider";
 import { LanguageClient, LanguageClientOptions } from 'vscode-languageclient/browser';
 import { ResolveIncludedUdoRequest } from "./utils";
-import { showOpcodeReference } from "../commands/showOpcodeReference"
+import { showOpcodeReference } from "../commands/showOpcodeReference";
 
 async function getWasmBase64(uri: vscode.Uri): Promise<string> {
     const data = await vscode.workspace.fs.readFile(uri);
@@ -300,7 +300,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 content: content,
                 contentHash: hashString,
                 pathBaseName: baseName
-            }
+            };
         } catch (err) {
             console.error(`Something went wrong while reading .udo file: ${err}`);
         }

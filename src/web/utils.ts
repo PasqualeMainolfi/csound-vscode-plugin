@@ -235,3 +235,9 @@ export function getCleanNodeText(nodeText: string) {
     lastIndexChar = lastIndexChar === -1 ? nodeClean.length : lastIndexChar;
     return nodeClean.slice(0, lastIndexChar);
 }
+
+export function getNameAndTypeFromLegacyVar(variable: string): { varName: string, varType: string } {
+    const vMatch = variable.match(/^([a-z])(.*?)(\[\])*$/);
+    if (!vMatch) { return { varName: variable, varType: "" }; }
+    return { varName: vMatch[2], varType: vMatch[1] + (vMatch[3] ?? "") };
+}

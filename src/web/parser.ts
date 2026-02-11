@@ -1,6 +1,6 @@
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { Node, Parser, Point, Range, Tree } from "web-tree-sitter";
-import { getCleanNodeText } from "./utils";
+import { getCleanNodeText, getNameAndTypeFromLegacyVar } from "./utils";
 
 export interface DocState {
     tree: Tree | null;
@@ -939,7 +939,6 @@ function addUserDefinedVar(node: Node, key: string, udef: UserDefinitions, macro
 
 
 function addUserDefinedType(node: Node, key: string, udef: UserDefinitions) {
-    let cache = new Set<string>();
     let formats = [];
     let completionItems: UdtMember[] = [];
     for (const child of node.childrenForFieldName("struct_field")) {
@@ -953,6 +952,17 @@ function addUserDefinedType(node: Node, key: string, udef: UserDefinitions) {
                 name: cName,
                 type: cType
             });
+        } else {
+            if (child.type === "type_identifier_legacy") {
+                const cName = getCleanNodeText(child.text);
+                const legacyVar = getNameAndTypeFromLegacyVar(cName);
+                const cleanName = cName.replace(/[\[\]]/g, '');
+                formats.push(`${legacyVar.varName}:${legacyVar.varType}`);
+                completionItems.push({
+                    name: cleanName,
+                    type: legacyVar.varType
+                });
+            }
         }
     }
 
@@ -976,7 +986,6 @@ function addUserDefinedType(node: Node, key: string, udef: UserDefinitions) {
         udt.udtFormat = structFormat;
     }
 };
-
 
 function addUserDefinedOpcode(node: Node, key: string, udef: UserDefinitions) {
     let formats:string[] = [];
@@ -1004,7 +1013,13 @@ function addUserDefinedOpcode(node: Node, key: string, udef: UserDefinitions) {
                 const inputs = formats[0]
                     .replace(/^\(|\)$/g, "")
                     .split(",")
-                    .map(c => c.split(":").pop()?.trim())
+                    .map(c => {
+                        if (c.includes(':')) {
+                            return c.split(":").pop()?.trim();
+                        } else {
+                            return getNameAndTypeFromLegacyVar(c).varType;
+                        }
+                    })
                     .filter((v): v is string => !!v)
                     .join("");
 
