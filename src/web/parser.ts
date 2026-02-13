@@ -308,7 +308,7 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                     if (nodeExplicitType.type === "identifier") {
                         report.types.push(nodeExplicitType);
                     }
-                    const name = nodeName?.text ?? "";
+                    const name = getCleanNodeText(nodeName?.text ?? "");
                     const ty = nodeExplicitType.text;
                     report.typedVars.set(name, ty);
 
@@ -341,7 +341,7 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                 );
 
                 if (!shouldSkip) {
-                    const nodeName = currentNode.text;
+                    const nodeName = getCleanNodeText(currentNode.text);
                     if (!["CsScore", "CsoundSynthesizer", "CsoundSynthesiser", "CsOptions", "CsInstruments"].includes(nodeName)) {
                         const splittedName = nodeName.split('[')[0];
                         addUserDefinedVar(currentNode, splittedName, report.userDefinitions, macros);
@@ -352,7 +352,7 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
             case "global_typed_identifier":
                 const nodeName = currentNode.childForFieldName("name");
                 if (nodeName) {
-                    const name = nodeName.text;
+                    const name = getCleanNodeText(nodeName.text);
                     addUserDefinedVar(nodeName, name, report.userDefinitions, macros);
                 }
                 break;
@@ -362,7 +362,7 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
             case "macro_define":
                 const macroNameNode = currentNode.childForFieldName("macro_name");
                 if (macroNameNode) {
-                    const macroName = macroNameNode.text;
+                    const macroName = getCleanNodeText(macroNameNode.text);
                     const macroId = macroNameNode.childForFieldName("id");
                     if (macroId) {
                         const idText = macroId.text;
@@ -411,7 +411,7 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                 break;
             case "include_directive":
                 const includedNode = currentNode.childForFieldName("included_file");
-                let iFile = includedNode?.text || "";
+                let iFile = includedNode?.text ?? "";
                 iFile = iFile.replace(/^[<"]/, "").replace(/[>"]$/, "").trim();
                 const uf = prepareUdoFile(iFile);
                 report.includedUdoFiles.set(iFile, uf);
@@ -475,8 +475,9 @@ function findScope(node: Node, udt: Map<string, UserDefinedType>): Scope {
         }
 
         const childField = currentNode.childForFieldName("name");
-        const childName = childField?.text;
+        let childName = childField?.text;
         if (childName) {
+            childName = getCleanNodeText(childName);
             switch (currentKind) {
                 case "instrument_definition":
                 case "instr":
