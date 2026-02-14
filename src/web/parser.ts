@@ -843,20 +843,21 @@ function getAccessType(node: Node, udt: Map<string, UserDefinedType>): AccessVar
         if (pkind === "label_statement") {
             const opLabel = parent.childForFieldName("label_name");
             if (opLabel) {
-                for (let i = 0; i < parent.childCount; i++) {
-                    const c = parent.child(i);
-                    if (c && c.type === ":") {
-                        return AccessVariableType.read;
-                    }
-                }
                 return AccessVariableType.write;
             }
         }
+
+        if (pkind === "goto_statement" || pkind === "rigoto_statement") {
+            const opLabel = parent.childForFieldName("label_name");
+            if (opLabel) {
+                return AccessVariableType.read;
+            }
+        }
+
         currentNode = parent;
     }
     return AccessVariableType.read;
 }
-
 
 function addUserDefinedVar(node: Node, key: string, udef: UserDefinitions, macros: Map<string, any>) {
     if (!key) { return; }
