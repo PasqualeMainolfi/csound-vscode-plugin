@@ -302,6 +302,7 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
 
         switch (currentNode.type) {
             case "typed_identifier":
+            case "typed_opcode_name":
                 const nodeExplicitType = currentNode.childForFieldName("type");
                 if (nodeExplicitType) {
                     const nodeName = currentNode.childForFieldName("name");
@@ -329,6 +330,7 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                 const shouldSkip = (
                     pk === "ERROR" ||
                     pk === "typed_identifier" ||
+                    pk === "typed_opcode_name" ||
                     pk === "global_typed_identifier" ||
                     pk === "struct_definition" ||
                     pk === "macro_args" ||

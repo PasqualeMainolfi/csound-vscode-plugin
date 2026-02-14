@@ -352,7 +352,7 @@ connection.onHover(({ textDocument, position }): Hover | null => {
             return null;
         case "identifier":
             const nodeParent = currentNode.parent;
-            const isType = nodeParent && ["typed_identifier", "type_identifier"].includes(nodeParent.type);
+            const isType = nodeParent && ["typed_identifier", "type_identifier", "typed_opcode_name"].includes(nodeParent.type);
             let childTypeName = getCleanNodeText(currentNode.text) ?? "";
             if (isType) {
                 const sd = docState.userDefinitions.userDefinedTypes.get(childTypeName);
