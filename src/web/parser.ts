@@ -336,6 +336,8 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                     pk === "macro_args" ||
                     pk === "flag_content" ||
                     pk === "instrument_definition" ||
+                    pk === "cabbage_statement" ||
+                    pk === "cabbage_property" ||
                     (pk === "struct_access" && currentParent?.childForFieldName("struct_member")?.id === currentNode.id) ||
                     (pk === "opcode_statement" && currentParent?.childForFieldName("op")?.id === currentNode.id) ||
                     (pk === "opcode_statement" && currentParent?.childForFieldName("op_macro")?.id === currentNode.id) ||
@@ -788,7 +790,7 @@ function getAccessType(node: Node, udt: Map<string, UserDefinedType>): AccessVar
 
         const pkind = parent.type;
         if (node.type === "identifier") {
-            if (pkind === "macro_usage") { return AccessVariableType.read; }
+            if (pkind === "macro_usage" || pkind === "array_access") { return AccessVariableType.read; }
 
             if (
                 pkind === "score_nestable_loop" || pkind === "score_statement" ||
@@ -826,6 +828,15 @@ function getAccessType(node: Node, udt: Map<string, UserDefinedType>): AccessVar
                 }
             }
             return AccessVariableType.read;
+        }
+
+        if (currentNode.type === "identifier") {
+            const outNode = parent.childForFieldName("outputs");
+            if (outNode) {
+                if (outNode.type === "identifier" && outNode.id === currentNode.id) {
+                    return AccessVariableType.read;
+                }
+            }
         }
 
         if (pkind === "opcode_statement") {
