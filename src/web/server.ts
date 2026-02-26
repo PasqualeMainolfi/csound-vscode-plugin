@@ -409,6 +409,7 @@ connection.onCompletion(({ textDocument, position }): CompletionItem[] => {
     const findedNodeText = nodeAtPos.text;
 
     switch (nodeKind) {
+        case "label_statement":
         case ":":
             const types = [
                 "a", "i", "k", "b", "S", "f", "w",
