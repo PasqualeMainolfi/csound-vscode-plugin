@@ -305,7 +305,6 @@
     "dependencies": {
         "@csound/browser": "^7.0.0-beta11",
         "install": "^0.13.0",
-        "npm": "^11.8.0",
         "path-browserify": "^1.0.1",
         "tree-sitter-bash": "^0.25.1",
         "tree-sitter-csound": "github:PasqualeMainolfi/tree-sitter-csound",

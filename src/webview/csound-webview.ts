@@ -1,7 +1,7 @@
 // This script runs in the WebView context and has access to the browser APIs
 // including WebAudio, which is what we need for @csound/browser
 
-import { Csound, CsoundObj } from '@csound/browser';
+import { Csound } from '@csound/browser';
 
 // Define CsoundObj interface locally since it's not exported
 
@@ -12,7 +12,7 @@ declare const window: any;
 
 class CsoundWebView {
     private vscode: any;
-    private csound?: CsoundObj;
+    private csound?: any;
     private audioContext?: any;
     private isInitialized = false;
     private isAudioRunning = false;
@@ -111,8 +111,7 @@ class CsoundWebView {
                 autoConnect: true,
                 withPlugins: [],
                 useWorker: false,
-                useSAB: false,
-                useSPN: false
+                useSAB: false
             });
 
             this.logOutput('✅ AudioWorklet initialization successful!');
@@ -223,7 +222,6 @@ class CsoundWebView {
                 withPlugins: [],
                 useWorker: false,
                 useSAB: false,
-                useSPN: false
             });
 
             if (!this.csound) {

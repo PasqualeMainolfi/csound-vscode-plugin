@@ -485,10 +485,10 @@ function findScope(node: Node, udt: Map<string, UserDefinedType>): Scope {
             switch (currentKind) {
                 case "instrument_definition":
                 case "instr":
-                    return { kind: "INSTR", name: childField.text };
+                    return { kind: "INSTR", name: childName };
                 case "udo_definition_modern":
                 case "udo_definition_legacy":
-                    return { kind: "UDO", name: childField.text };
+                    return { kind: "UDO", name: childName };
                 default:
                     break;
             }

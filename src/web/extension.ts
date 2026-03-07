@@ -8,8 +8,7 @@ import { showOpcodeReference } from "../commands/showOpcodeReference";
 
 async function getWasmBase64(uri: vscode.Uri): Promise<string> {
     const data = await vscode.workspace.fs.readFile(uri);
-    let binary = ''
-        ;
+    let binary = '';
     for (let i = 0; i < data.byteLength; i++) {
         binary += String.fromCharCode(data[i]);
     }
@@ -167,29 +166,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push({
         dispose: () => client.stop()
-    });
-
-    const csoundControls = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    csoundControls.text = "$(agent) Csound actions";
-    csoundControls.tooltip = "$(play-circle) Run | $(stop-circle) Stop | $(book) Manual";
-    csoundControls.command = "extension.csoundStatusBar";
-    csoundControls.show();
-
-    context.subscriptions.push(csoundControls);
-
-    vscode.commands.registerCommand("extension.csoundStatusBar", async () => {
-        const choice = vscode.window.showQuickPick([
-            { label: "$(play-circle) Run", command: "extension.csoundPlayActiveDocument" },
-            { label: "$(stop-circle) Stop", command: "extension.csoundKillCsoundProcess" },
-            { label: "$(book) Manual", command: "extension.showOpcodeReference" },
-        ], {
-            placeHolder: "Csound actions"
-        });
-        if (!(await choice)?.command) {
-            return;
-        } else {
-            vscode.commands.executeCommand((await choice)!.command);
-        }
     });
 
     // Create and register the WebView provider

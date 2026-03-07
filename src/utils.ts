@@ -264,3 +264,34 @@ function getLatestReleaseTag(): Promise<string> {
         req.end();
     });
 }
+
+export function registerCsoundStatusBar(context: vscode.ExtensionContext) {
+    const csoundControls = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    csoundControls.text = "$(agent) Csound actions";
+    csoundControls.tooltip = "Csound actions";
+    csoundControls.command = "csound.showStatusBarActions";
+    csoundControls.show();
+
+    context.subscriptions.push(csoundControls);
+
+    vscode.commands.registerCommand("csound.showStatusBarActions", async () => {
+        const isWeb = vscode.env.uiKind === vscode.UIKind.Web;
+
+        const actions: { label: string; command: string }[] = isWeb
+            ? []
+            : [
+                { label: "$(play-circle) Run", command: "csound.runFile" },
+                { label: "$(stop-circle) Stop", command: "csound.stopExecution" },
+                { label: "$(unmute) Generate Audio File", command: "csound.saveAsAudioFile" },
+                { label: "$(book) Manual", command: "csound.openManual" }
+            ];
+
+        const choice = await vscode.window.showQuickPick(actions, {
+            placeHolder: "Csound actions"
+        });
+
+        if (!choice) { return; }
+
+        vscode.commands.executeCommand(choice.command);
+    });
+}
