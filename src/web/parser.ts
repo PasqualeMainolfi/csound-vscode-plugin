@@ -291,6 +291,85 @@ function initializeTreeReport(): TreeReport {
     };
 };
 
+function isValidOutputUdoTypes(typeIdentifier: string, node: Node): boolean {
+    const trimmed = typeIdentifier.trim();
+
+    switch (node.type) {
+        case "modern_udo_outputs":
+            if (trimmed.toLowerCase() === "void") {
+                return true;
+            }
+            break;
+        case "udo_definition_legacy":
+            if (trimmed.includes("0")) {
+                return trimmed.length === 1;
+            }
+            break;
+    }
+
+    const validChars = new Set(["a", "f", "i", "j", "k", "K", "S"]);
+    for (let i = 0; i < trimmed.length; i++) {
+        const c = trimmed[i];
+        if (validChars.has(c)) {
+            continue;
+        }
+        if (c === "[") {
+            if (trimmed[i + 1] !== "]") {
+                return false;
+            }
+            i++;
+            continue;
+        }
+        return false;
+    }
+
+    return true;
+}
+
+function isValidInputUdoTypes(typeIdentifier: string): boolean {
+    const trimmed = typeIdentifier.trim();
+    const validChars = new Set(["a", "f", "k", "o", "p", "i", "j", "O", "P", "V", "K", "S", "0"]);
+
+    for (let i = 0; i < trimmed.length; i++) {
+        const c = trimmed[i];
+        if (validChars.has(c)) {
+            continue;
+        }
+        if (c === "[") {
+            if (trimmed[i + 1] !== "]") {
+                return false;
+            }
+            i++;
+            continue;
+        }
+        return false;
+    }
+
+    return true;
+}
+
+function isValidModernUdoSignatureType(typeIdentifier: string, typeNode: Node): boolean {
+    const parent = typeNode.parent;
+
+    switch (parent?.type) {
+        case "modern_udo_inputs":
+            return isValidInputUdoTypes(typeIdentifier);
+        case "modern_udo_outputs":
+            return isValidOutputUdoTypes(typeIdentifier, parent);
+        case "typed_identifier":
+        case "typed_opcode_name":
+            switch (parent.parent?.type) {
+                case "modern_udo_inputs":
+                    return isValidInputUdoTypes(typeIdentifier);
+                case "modern_udo_outputs":
+                    return isValidOutputUdoTypes(typeIdentifier, parent.parent);
+            }
+            break;
+    }
+
+    return false;
+}
+
 export function iterateTree(tree: Tree, macros: any): TreeReport {
     const rootNode = tree.rootNode.walk();
     let toVisit = [rootNode.currentNode];
@@ -306,11 +385,11 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                 const nodeExplicitType = currentNode.childForFieldName("type");
                 if (nodeExplicitType) {
                     const nodeName = currentNode.childForFieldName("name");
-                    if (nodeExplicitType.type === "identifier") {
-                        report.types.push(nodeExplicitType);
-                    }
                     const name = getCleanNodeText(nodeName?.text ?? "");
                     const ty = nodeExplicitType.text;
+                    if (nodeExplicitType.type === "identifier" && !isValidModernUdoSignatureType(ty, nodeExplicitType)) {
+                        report.types.push(nodeExplicitType);
+                    }
                     report.typedVars.set(name, ty);
 
                     const isStructField = currentParent?.type === "struct_definition"
