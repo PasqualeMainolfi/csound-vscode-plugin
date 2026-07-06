@@ -211,7 +211,7 @@ export function getUnusedLabelFromKind(kind: string): string {
     switch (kind) {
         case "label_statement":
             return "Unused label";
-        case "macro_ussage":
+        case "macro_usage":
             return "Unused macro";
         default:
             return "Unused variable";
@@ -223,7 +223,7 @@ export function getUndefinedLabelFromKind(kind: string): string {
         case "goto_statement":
         case "rigoto_statement":
             return "Undefined label";
-        case "macro_ussage":
+        case "macro_usage":
             return "Undefined macro";
         default:
             return "Undefined variable";

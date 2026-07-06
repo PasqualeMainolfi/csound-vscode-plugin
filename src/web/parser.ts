@@ -16,12 +16,29 @@ export interface DocState {
 export interface TreeReport {
     opcodes: Node[],
     types: Node[],
+    genericErrors: GenericError[],
     udo: Set<string>,
     udt: Set<string>,
     typedVars: Map<string, string>,
     userDefinitions: UserDefinitions,
     includedUdoFiles: Map<string, UdoFile>,
     flags: Map<string, Node>
+};
+
+export enum GError {
+    syntax,
+    explicitType,
+    scoreStatement,
+    missingPfield,
+    controlLoopSyntaxError,
+    instrBlockSyntaxError,
+    udoBlockSyntaxError,
+    cabbageBlockError
+};
+
+export interface GenericError {
+    node: Node;
+    errorType: GError;
 };
 
 export interface UdtMember {
@@ -282,6 +299,7 @@ function initializeTreeReport(): TreeReport {
     return {
         opcodes: [],
         types: [],
+        genericErrors: [],
         udo: new Set<string>(),
         udt: new Set<string>(),
         typedVars: new Map<string, string>(),
@@ -370,14 +388,83 @@ function isValidModernUdoSignatureType(typeIdentifier: string, typeNode: Node): 
     return false;
 }
 
+function hasAncestorOfKind(node: Node, kind: string): boolean {
+    let parent = node.parent;
+    while (parent) {
+        if (parent.type === kind) { return true; }
+        parent = parent.parent;
+    }
+    return false;
+}
+
+enum OpcodeCheck {
+    opcode,
+    udo
+}
+
+function checkOpcode(node: Node): OpcodeCheck | undefined {
+    if (node.type !== "opcode_name") { return undefined; }
+
+    let current = node.parent;
+    let isFunction = false;
+    while (current) {
+        if (current.type === "function_call" || current.type === "opcode_statement") {
+            isFunction = true;
+            break;
+        }
+        current = current.parent;
+    }
+
+    if (!isFunction) { return undefined; }
+    return hasAncestorOfKind(node, "udo_definition") ? OpcodeCheck.udo : OpcodeCheck.opcode;
+}
+
+function hasSpecificNode(node: Node, expectedKind: string): boolean {
+    let toVisit: Node[] = [];
+    for (let i = node.childCount - 1; i >= 0; i--) {
+        const child = node.child(i);
+        if (child) { toVisit.push(child); }
+    }
+
+    while (toVisit.length > 0) {
+        const current = toVisit.pop()!;
+        if (current.type === "ERROR") { continue; }
+        if (current.type === expectedKind && !current.isMissing) { return true; }
+
+        for (let i = current.childCount - 1; i >= 0; i--) {
+            const child = current.child(i);
+            if (child) { toVisit.push(child); }
+        }
+    }
+
+    return false;
+}
+
+export function isValidType(typeIdentifier: string): boolean {
+    const trimmed = typeIdentifier.trim().replace(/(?:\[\])+$/, "");
+    return [
+        "InstrDef", "Instr", "Opcode", "OpcodeDef", "Complex",
+        "a", "i", "k", "S", "f", "w", "b"
+    ].includes(trimmed);
+}
+
 export function iterateTree(tree: Tree, macros: any): TreeReport {
     const rootNode = tree.rootNode.walk();
     let toVisit = [rootNode.currentNode];
     let report = initializeTreeReport();
+    let hasCabbageStart = false;
+    let hasCabbageAraStart = false;
 
     while (toVisit.length > 0) {
         const currentNode = toVisit.pop()!;
         const currentParent = currentNode.parent;
+
+        const opcodeCheck = checkOpcode(currentNode);
+        if (opcodeCheck === OpcodeCheck.opcode) {
+            report.opcodes.push(currentNode);
+        } else if (opcodeCheck === OpcodeCheck.udo) {
+            report.udo.add(getCleanNodeText(currentNode.text));
+        }
 
         switch (currentNode.type) {
             case "typed_identifier":
@@ -430,7 +517,16 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                         addUserDefinedVar(currentNode, splittedName, report.userDefinitions, macros);
                     }
                 }
-                // missing ERROR case!
+
+                if (pk === "ERROR") {
+                    const scope = findScope(currentNode, report.userDefinitions.userDefinedTypes);
+                    if (scope.kind === "SCORE" && currentNode.type !== "type_identifier_legacy") {
+                        report.genericErrors.push({
+                            node: currentNode,
+                            errorType: GError.scoreStatement
+                        });
+                    }
+                }
                 break;
             case "global_typed_identifier":
                 const nodeName = currentNode.childForFieldName("name");
@@ -441,6 +537,25 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                 break;
             case "score_nestable_loop":
             case "score_statement":
+                const scoreMacroName = currentNode.childForFieldName("macro_identifier");
+                if (scoreMacroName) {
+                    const macroName = getCleanNodeText(scoreMacroName.text);
+                    if (macroName) {
+                        let macro = report.userDefinitions.userDefinedMacros.get(macroName);
+                        if (macro) {
+                            macro.nodeLocation = scoreMacroName.startIndex;
+                            macro.macroLabel = macroName;
+                            macro.macroValue = "Score statement macro";
+                        } else {
+                            report.userDefinitions.userDefinedMacros.set(macroName, {
+                                nodeLocation: scoreMacroName.startIndex,
+                                macroName: macroName,
+                                macroLabel: macroName,
+                                macroValue: "Score statement macro"
+                            });
+                        }
+                    }
+                }
                 break;
             case "macro_define":
                 const macroNameNode = currentNode.childForFieldName("macro_name");
@@ -483,26 +598,118 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                 const udoNodeName = currentNode.childForFieldName("name");
                 if (udoNodeName) {
                     const opName = getCleanNodeText(udoNodeName.text);
+                    report.udo.add(opName);
                     addUserDefinedOpcode(currentNode, opName, report.userDefinitions);
                 }
                 break;
             case "legacy_udo_args":
+                const legacyArgs = currentNode.text;
+                const isInputsContext = currentNode.parent
+                    ?.childForFieldName("inputs")
+                    ?.id === currentNode.id;
+                const isValidLegacyArgs = isInputsContext
+                    ? isValidInputUdoTypes(legacyArgs)
+                    : currentNode.parent
+                        ? isValidOutputUdoTypes(legacyArgs, currentNode.parent)
+                        : false;
+                if (!isValidLegacyArgs) {
+                    report.genericErrors.push({
+                        node: currentNode,
+                        errorType: GError.explicitType
+                    });
+                }
                 break;
             case "score_statement_func":
+                const nodeMode = currentNode.child(0);
+                const modeName = nodeMode?.childForFieldName("id")?.text.trim();
+                if (modeName?.startsWith("i") && currentNode.childCount < 3) {
+                    report.genericErrors.push({
+                        node: currentNode,
+                        errorType: GError.missingPfield
+                    });
+                }
                 break;
             case "score_statement_instr":
+                const firstFieldName = currentNode.fieldNameForChild(0);
+                if (firstFieldName) {
+                    const mode = firstFieldName === "statement" ? 1 : 0;
+                    const p1 = currentNode.fieldNameForChild(mode);
+                    const p2 = currentNode.fieldNameForChild(1 + mode);
+                    const p3 = currentNode.fieldNameForChild(2 + mode);
+                    const isValidInstr = (
+                        ["instr", "statement_instr", "statement_macro_instr"].includes(p1 ?? "") &&
+                        p2 === "start_time" &&
+                        p3 === "duration"
+                    );
+                    if (!isValidInstr) {
+                        report.genericErrors.push({
+                            node: currentNode,
+                            errorType: GError.missingPfield
+                        });
+                    }
+                }
                 break;
             case "include_directive":
                 const includedNode = currentNode.childForFieldName("included_file");
                 let iFile = includedNode?.text ?? "";
                 iFile = iFile.replace(/^[<"]/, "").replace(/[>"]$/, "").trim();
-                const uf = prepareUdoFile(iFile);
-                report.includedUdoFiles.set(iFile, uf);
+                if (iFile.endsWith(".udo")) {
+                    const uf = prepareUdoFile(iFile);
+                    report.includedUdoFiles.set(iFile, uf);
+                }
                 break;
             case "control_statement":
+                const controlKind = currentNode.children
+                    .map((child): { node: Node, expected: string[] } | undefined => {
+                        switch (child.type) {
+                            case "if_statement":
+                                return { node: child, expected: ["kw_endif", "kw_fi", "then_goto"] };
+                            case "while_loop":
+                            case "for_loop":
+                            case "until_loop":
+                                return { node: child, expected: ["kw_od", "od"] };
+                            case "switch_statement":
+                                return { node: child, expected: ["kw_switch_end", "endsw"] };
+                            default:
+                                return undefined;
+                        }
+                    })
+                    .find((child): child is { node: Node, expected: string[] } => !!child);
+
+                if (controlKind) {
+                    const isBoundedError = hasSpecificNode(controlKind.node, "control_statement_bounded_error");
+                    const isClosed = controlKind.expected.some(closer => {
+                        if (closer === "then_goto") {
+                            return !!controlKind.node.childForFieldName("then_goto");
+                        }
+                        return hasSpecificNode(controlKind.node, closer);
+                    });
+
+                    if (isBoundedError || !isClosed) {
+                        report.genericErrors.push({
+                            node: currentNode,
+                            errorType: GError.controlLoopSyntaxError
+                        });
+                    }
+                }
                 break;
             case "instrument_definition":
             case "udo_definition":
+                const firstChild = currentNode.child(0);
+                if (firstChild?.type === "instr" && hasSpecificNode(currentNode, "instr_udo_bounded_error")) {
+                    report.genericErrors.push({
+                        node: currentNode,
+                        errorType: GError.instrBlockSyntaxError
+                    });
+                } else if (
+                    (firstChild?.type === "udo_definition_legacy" || firstChild?.type === "udo_definition_modern") &&
+                    hasSpecificNode(currentNode, "instr_udo_bounded_error")
+                ) {
+                    report.genericErrors.push({
+                        node: currentNode,
+                        errorType: GError.udoBlockSyntaxError
+                    });
+                }
                 break;
             case "options_block":
                 const children = currentNode.children;
@@ -517,7 +724,61 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                     }
                 }
                 break;
+            case "tag_cabbage_start":
+            case "tag_cabbageara_start":
+                if (currentNode.type === "tag_cabbage_start") {
+                    hasCabbageStart = true;
+                } else {
+                    hasCabbageAraStart = true;
+                }
+
+                if (hasCabbageStart && hasCabbageAraStart) {
+                    report.genericErrors.push({
+                        node: currentNode,
+                        errorType: GError.cabbageBlockError
+                    });
+                }
+                break;
             case "ERROR":
+                const errorText = currentNode.text.trim();
+                const isKnownCsdWrapperError = (
+                    errorText.includes("<CsInstruments>") ||
+                    errorText.includes("</CsInstruments>") ||
+                    errorText.includes("<CsScore>") ||
+                    errorText.includes("</CsScore>") ||
+                    errorText.includes("csd_file") ||
+                    errorText.includes("cs_legacy_file")
+                );
+
+                if (!isKnownCsdWrapperError) {
+                    const scope = findScope(currentNode, report.userDefinitions.userDefinedTypes);
+                    const currentParentKind = currentNode.parent?.type ?? "";
+                    const canReport = (
+                        !errorText.includes(")") &&
+                        !errorText.includes(",") &&
+                        !errorText.includes("]") &&
+                        !errorText.includes("<")
+                    );
+
+                    if (currentParentKind !== "modern_udo_outputs" && canReport) {
+                        if (errorText.length === 1 || errorText.includes(":")) {
+                            report.genericErrors.push({
+                                node: currentNode,
+                                errorType: GError.explicitType
+                            });
+                        } else if (scope.kind === "SCORE") {
+                            report.genericErrors.push({
+                                node: currentNode,
+                                errorType: GError.scoreStatement
+                            });
+                        } else {
+                            report.genericErrors.push({
+                                node: currentNode,
+                                errorType: GError.syntax
+                            });
+                        }
+                    }
+                }
                 break;
             default:
                 break;
@@ -1117,7 +1378,7 @@ function addUserDefinedOpcode(node: Node, key: string, udef: UserDefinitions) {
                     .filter((v): v is string => !!v)
                     .join("");
 
-                const outputs = formats[1].replace(/ˆ\(|\)$/g, "");
+                const outputs = formats[1].replace(/^\(|\)$/g, "");
                 const inputsData = getUdoDataType(inputs);
                 const outputsData = getUdoDataType(outputs);
                 udoInfo = [formMod, inputsData, outputsData, UdoType.modern];
@@ -1139,7 +1400,7 @@ function addUserDefinedOpcode(node: Node, key: string, udef: UserDefinitions) {
         let argOutputs: UdoArg[] = [];
         for (let i = 0; i < udoInfo[2].length; i++) {
             const arg = udoInfo[2][i];
-            argInputs.push({
+            argOutputs.push({
                 position: i,
                 arg: arg
             });
@@ -1163,7 +1424,7 @@ function addUserDefinedOpcode(node: Node, key: string, udef: UserDefinitions) {
         if (!udefUdo) {
             udef.userDefinedOpcodes.set(key, udo);
         } else {
-            udefUdo = udo;
+            udef.userDefinedOpcodes.set(key, udo);
         }
     }
 };

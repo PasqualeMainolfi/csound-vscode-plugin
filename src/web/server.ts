@@ -3,8 +3,8 @@
 
 import { DiagnosticSeverity, DiagnosticTag, TextDocumentSyncKind } from 'vscode-languageserver';
 import { TextDocument, TextEdit } from 'vscode-languageserver-textdocument';
-import { Parser, Language, Query, Point } from 'web-tree-sitter';
-import { updateTree, DocState, iterateTree, parseUdoFile, TreeReport } from './parser';
+import { Parser, Language, Query, Point, Node } from 'web-tree-sitter';
+import { updateTree, DocState, GError, isValidType, iterateTree, parseUdoFile, TreeReport } from './parser';
 import {
     SEMANTIC_TOKEN_TYPE,
     getSemanticTokens,
@@ -66,6 +66,77 @@ function base64ToUint8Array(base64: string | undefined): Uint8Array {
         bytes[i] = binaryString.charCodeAt(i);
     }
     return bytes;
+}
+
+function nodeDiagnostic(
+    node: Node,
+    severity: DiagnosticSeverity,
+    message: string,
+    tags: DiagnosticTag[] = [],
+    expandToLine = false,
+    textLines: string[] = []
+): Diagnostic {
+    const start = node.startPosition;
+    const end = expandToLine
+        ? { row: start.row, column: textLines[start.row]?.length ?? start.column }
+        : node.endPosition;
+
+    return {
+        range: {
+            start: { line: start.row, character: expandToLine ? 0 : start.column },
+            end: { line: end.row, character: end.column }
+        },
+        severity,
+        source: "csound-lsp",
+        message,
+        tags
+    };
+}
+
+function pushDiagnostic(diagnostics: Diagnostic[], cachedDiagnostics: Set<string>, diagnostic: Diagnostic) {
+    const diagKey = `${diagnostic.range.start.line}-${diagnostic.range.end.character}-${diagnostic.message}`;
+    if (!cachedDiagnostics.has(diagKey)) {
+        cachedDiagnostics.add(diagKey);
+        diagnostics.push(diagnostic);
+    }
+}
+
+function isKnownFlag(flag: string): boolean {
+    for (const data of jsonFlags.values()) {
+        const prefixes = String(data["prefix"] ?? "").split(",");
+        for (const prefix of prefixes) {
+            const normalized = prefix
+                .split(/[=\s]/)
+                [0]
+                ?.trim();
+            if (normalized === flag) { return true; }
+        }
+    }
+    return false;
+}
+
+function genericErrorMessage(errorType: GError, nodeText: string): { message: string, expandToLine: boolean } {
+    switch (errorType) {
+        case GError.syntax:
+            return { message: `Syntax error: <${nodeText}>`, expandToLine: false };
+        case GError.explicitType:
+            return { message: `Unknown type identifier: <${nodeText}>`, expandToLine: false };
+        case GError.scoreStatement:
+            return { message: "Unknown score statement syntax or missing mandatory p-fields", expandToLine: false };
+        case GError.missingPfield:
+            return { message: "Missing mandatory p-fields (p1, p2, p3)", expandToLine: false };
+        case GError.controlLoopSyntaxError:
+            return { message: "Unclosed control block", expandToLine: true };
+        case GError.instrBlockSyntaxError:
+            return { message: "Unclosed instr block", expandToLine: true };
+        case GError.udoBlockSyntaxError:
+            return { message: "Unclosed udo block", expandToLine: true };
+        case GError.cabbageBlockError:
+            return {
+                message: "It is not possible to have a Cabbage and a Cabbage ARA block in the same .csd file",
+                expandToLine: true
+            };
+    }
 }
 
 connection.onInitialize(async (params): Promise<InitializeResult> => {
@@ -173,6 +244,72 @@ documents.onDidChangeContent(async (change) => {
         doc.cachedTypedVars = diagnosticReport.typedVars;
         doc.userDefinitions = diagnosticReport.userDefinitions;
 
+        for (const [flag, flagNode] of diagnosticReport.flags.entries()) {
+            if (!isKnownFlag(flag)) {
+                pushDiagnostic(
+                    diagnostics,
+                    cachedDiagnostics,
+                    nodeDiagnostic(flagNode, DiagnosticSeverity.Error, `Unknown flag type: <${flag}>`)
+                );
+            }
+        }
+
+        for (const opcodeNode of diagnosticReport.opcodes) {
+            const opcodeText = getCleanNodeText(opcodeNode.text);
+            const opcodeType = opcodeText.split(":")[0] ?? opcodeText;
+            const isIncludedUdo = Array
+                .from(doc.cachedIncludedUdoFiles.values())
+                .some(udoFile => udoFile.udoList.has(opcodeType));
+            const isKnownOpcode = (
+                diagnosticReport.udo.has(opcodeType) ||
+                diagnosticReport.udt.has(opcodeType) ||
+                doc.userDefinitions.userDefinedOpcodes.has(opcodeType) ||
+                jsonOpcodes.has(opcodeText) ||
+                jsonOpcodes.has(opcodeType) ||
+                !!opcodeFromManual[opcodeType] ||
+                isIncludedUdo
+            );
+
+            if (!isKnownOpcode) {
+                pushDiagnostic(
+                    diagnostics,
+                    cachedDiagnostics,
+                    nodeDiagnostic(opcodeNode, DiagnosticSeverity.Error, `Unknown opcode: <${opcodeType}>`)
+                );
+            }
+        }
+
+        for (const typeNode of diagnosticReport.types) {
+            const typeIdentifier = getCleanNodeText(typeNode.text);
+            const isTypeIncluded = Array
+                .from(doc.cachedIncludedUdoFiles.values())
+                .some(udoFile => udoFile.typeList.has(typeIdentifier));
+            if (!isValidType(typeIdentifier) && !diagnosticReport.udt.has(typeIdentifier) && !isTypeIncluded) {
+                pushDiagnostic(
+                    diagnostics,
+                    cachedDiagnostics,
+                    nodeDiagnostic(typeNode, DiagnosticSeverity.Error, `Unknown type identifier: <${typeIdentifier}>`)
+                );
+            }
+        }
+
+        for (const genericError of diagnosticReport.genericErrors) {
+            const nodeText = getCleanNodeText(genericError.node.text);
+            const error = genericErrorMessage(genericError.errorType, nodeText);
+            pushDiagnostic(
+                diagnostics,
+                cachedDiagnostics,
+                nodeDiagnostic(
+                    genericError.node,
+                    DiagnosticSeverity.Error,
+                    error.message,
+                    [],
+                    error.expandToLine,
+                    doc.textLines
+                )
+            );
+        }
+
         for (const varRef of doc.userDefinitions.userUnusedVars) {
             const findedNode = doc
                 .tree!
@@ -199,11 +336,7 @@ documents.onDidChangeContent(async (change) => {
                 tags: [DiagnosticTag.Unnecessary]
             };
 
-            const diagKey = `${currentDiagnostic.range.start.line}-${currentDiagnostic.range.end.character}-${currentDiagnostic.message}`;
-            if (!cachedDiagnostics.has(diagKey)) {
-                cachedDiagnostics.add(diagKey);
-                diagnostics.push(currentDiagnostic);
-            };
+            pushDiagnostic(diagnostics, cachedDiagnostics, currentDiagnostic);
         };
 
         for (const varRef of doc.userDefinitions.userUndefinedVars) {
@@ -235,11 +368,7 @@ documents.onDidChangeContent(async (change) => {
                         tags: []
                     };
 
-                    const diagKey = `${currentDiagnostic.range.start.line}-${currentDiagnostic.range.end.character}-${currentDiagnostic.message}`;
-                    if (!cachedDiagnostics.has(diagKey)) {
-                        cachedDiagnostics.add(diagKey);
-                        diagnostics.push(currentDiagnostic);
-                    };
+                    pushDiagnostic(diagnostics, cachedDiagnostics, currentDiagnostic);
                 }
             }
         }

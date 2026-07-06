@@ -3,8 +3,14 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
 const webpack = require('webpack');
 const copyPlugin = require('copy-webpack-plugin');
+
+const localCsoundGrammarPath = path.resolve(__dirname, '../csound-tree-sitter');
+const csoundGrammarPath = fs.existsSync(path.join(localCsoundGrammarPath, 'tree-sitter-csound.wasm'))
+	? localCsoundGrammarPath
+	: path.resolve(__dirname, 'node_modules/tree-sitter-csound');
 
 //@ts-check
 /** @typedef {import('webpack').Configuration} WebpackConfig **/
@@ -113,12 +119,12 @@ const lspServerConfig = {
                     to: './'
                 },
                 {
-                    from: path.resolve(__dirname, 'node_modules/tree-sitter-csound/tree-sitter-csound.wasm'),
+                    from: path.join(csoundGrammarPath, 'tree-sitter-csound.wasm'),
                     to: './',
                     context: 'src/web'
                 },
                 {
-                    from: path.resolve(__dirname, 'node_modules/tree-sitter-csound/queries'),
+                    from: path.join(csoundGrammarPath, 'queries'),
                     to: './queries',
                     context: 'src/web',
                     noErrorOnMissing: true
