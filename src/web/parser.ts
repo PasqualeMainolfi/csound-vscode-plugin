@@ -9,7 +9,11 @@ export interface DocState {
     version: number;
     userDefinitions: UserDefinitions,
     cachedTypedVars: Map<string, string>,
-    cachedIncludedUdoFiles: Map<string, UdoFile>
+    cachedIncludedUdoFiles: Map<string, UdoFile>,
+    // .udo files included by the last analysed version of the document
+    includedUdoFiles: Map<string, UdoFile>,
+    // includes that could not be read; retried on save
+    unresolvedUdoFiles: Set<string>
 };
 
 // NODE COLLECTIONS FOR DIAGNOSTIC PROCESS
@@ -33,7 +37,8 @@ export enum GError {
     controlLoopSyntaxError,
     instrBlockSyntaxError,
     udoBlockSyntaxError,
-    cabbageBlockError
+    cabbageBlockError,
+    missing
 };
 
 export interface GenericError {
@@ -119,6 +124,7 @@ export interface UserDefinedMacro {
 
 export interface UserDefinedVariable {
     nodeLocation: number; // equivalent to start_byte!
+    definitionLocation: number | undefined; // first write, used to offer the variable only after it
     varName: string;
     varScope: Scope;
     varCalls: number;
@@ -177,6 +183,13 @@ export function prepareUdoFile(file: string): UdoFile {
 }
 
 export function parseUdoFile(udoFile: UdoFile, parser: Parser) {
+    udoFile.udoList.clear();
+    udoFile.typeList.clear();
+    udoFile.macroList.clear();
+    udoFile.userDefinedOpcodes = new Map<string, Udo>();
+    udoFile.userDefinedTypes = new Map<string, UserDefinedType>();
+    udoFile.userDefinedMacros = new Map<string, UserDefinedMacro>();
+
     const content = udoFile.content;
     if (content) {
         const tree = parser.parse(content);
@@ -213,24 +226,23 @@ export function parseUdoFile(udoFile: UdoFile, parser: Parser) {
                         const macroIdNode = macroNameNode.childForFieldName("id");
                         if (macroIdNode) {
                             const cleanMacroId = getCleanNodeText(macroIdNode.text);
+                            // `#define NAME ##` has no macro_values node
                             const macroValueNode = currentNode.childForFieldName("macro_values");
-                            if (macroValueNode) {
-                                const cleanMacroValue = getCleanNodeText(macroValueNode.text);
-                                let macro = userLocalDefinitions.userDefinedMacros.get(cleanMacroId);
-                                if (macro) {
-                                    macro.nodeLocation = currentNode.startIndex;
-                                    macro.macroLabel = cleanMacroName;
-                                    macro.macroValue = cleanMacroValue;
-                                } else {
-                                    userLocalDefinitions.userDefinedMacros.set(cleanMacroId, {
-                                        nodeLocation: currentNode.startIndex,
-                                        macroName: cleanMacroId,
-                                        macroLabel: cleanMacroName,
-                                        macroValue: cleanMacroValue
-                                    });
-                                }
-                                udoFile.macroList.add(cleanMacroId);
+                            const cleanMacroValue = macroValueNode ? getCleanNodeText(macroValueNode.text) : "";
+                            let macro = userLocalDefinitions.userDefinedMacros.get(cleanMacroId);
+                            if (macro) {
+                                macro.nodeLocation = currentNode.startIndex;
+                                macro.macroLabel = cleanMacroName;
+                                macro.macroValue = cleanMacroValue;
+                            } else {
+                                userLocalDefinitions.userDefinedMacros.set(cleanMacroId, {
+                                    nodeLocation: currentNode.startIndex,
+                                    macroName: cleanMacroId,
+                                    macroLabel: cleanMacroName,
+                                    macroValue: cleanMacroValue
+                                });
                             }
+                            udoFile.macroList.add(cleanMacroId);
                         }
                     }
                     break;
@@ -277,7 +289,9 @@ export function updateTree(parser: Parser, document: TextDocument, docs: Map<str
             version: version,
             userDefinitions: oldState ? oldState.userDefinitions : initializeUserDefinitions(),
             cachedTypedVars: oldState ? oldState.cachedTypedVars : new Map<string, string>(),
-            cachedIncludedUdoFiles: oldState ? oldState.cachedIncludedUdoFiles : new Map<string, UdoFile>()
+            cachedIncludedUdoFiles: oldState ? oldState.cachedIncludedUdoFiles : new Map<string, UdoFile>(),
+            includedUdoFiles: oldState ? oldState.includedUdoFiles : new Map<string, UdoFile>(),
+            unresolvedUdoFiles: oldState ? oldState.unresolvedUdoFiles : new Set<string>()
         });
     }
 }
@@ -388,35 +402,18 @@ function isValidModernUdoSignatureType(typeIdentifier: string, typeNode: Node): 
     return false;
 }
 
-function hasAncestorOfKind(node: Node, kind: string): boolean {
-    let parent = node.parent;
-    while (parent) {
-        if (parent.type === kind) { return true; }
-        parent = parent.parent;
-    }
-    return false;
-}
-
-enum OpcodeCheck {
-    opcode,
-    udo
-}
-
-function checkOpcode(node: Node): OpcodeCheck | undefined {
-    if (node.type !== "opcode_name") { return undefined; }
+// opcode name of a call (`out oscili ...`, `oscili(...)`), also inside udo bodies
+function isOpcodeCall(node: Node): boolean {
+    if (node.type !== "opcode_name") { return false; }
 
     let current = node.parent;
-    let isFunction = false;
     while (current) {
         if (current.type === "function_call" || current.type === "opcode_statement") {
-            isFunction = true;
-            break;
+            return true;
         }
         current = current.parent;
     }
-
-    if (!isFunction) { return undefined; }
-    return hasAncestorOfKind(node, "udo_definition") ? OpcodeCheck.udo : OpcodeCheck.opcode;
+    return false;
 }
 
 function hasSpecificNode(node: Node, expectedKind: string): boolean {
@@ -459,11 +456,16 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
         const currentNode = toVisit.pop()!;
         const currentParent = currentNode.parent;
 
-        const opcodeCheck = checkOpcode(currentNode);
-        if (opcodeCheck === OpcodeCheck.opcode) {
+        if (isOpcodeCall(currentNode)) {
             report.opcodes.push(currentNode);
-        } else if (opcodeCheck === OpcodeCheck.udo) {
-            report.udo.add(getCleanNodeText(currentNode.text));
+        }
+
+        // missing tokens inserted by error recovery
+        if (currentNode.isMissing) {
+            report.genericErrors.push({
+                node: currentNode,
+                errorType: GError.missing
+            });
         }
 
         switch (currentNode.type) {
@@ -564,23 +566,22 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
                     const macroId = macroNameNode.childForFieldName("id");
                     if (macroId) {
                         const idText = macroId.text;
+                        // `#define NAME ##` has no macro_values node
                         const macroValue = currentNode.childForFieldName("macro_values");
-                        if (macroValue) {
-                            const mv = macroValue.text;
-                            let udm = report.userDefinitions.userDefinedMacros.get(idText);
-                            if (udm) {
-                                udm.nodeLocation = currentNode.startIndex;
-                                udm.macroLabel = macroName;
-                                udm.macroValue = mv;
-                            } else {
-                                const udm: UserDefinedMacro = {
-                                    nodeLocation: currentNode.startIndex,
-                                    macroName: idText,
-                                    macroLabel: macroName,
-                                    macroValue: mv
-                                };
-                                report.userDefinitions.userDefinedMacros.set(idText, udm);
-                            }
+                        const mv = macroValue ? macroValue.text : "";
+                        let udm = report.userDefinitions.userDefinedMacros.get(idText);
+                        if (udm) {
+                            udm.nodeLocation = currentNode.startIndex;
+                            udm.macroLabel = macroName;
+                            udm.macroValue = mv;
+                        } else {
+                            const udm: UserDefinedMacro = {
+                                nodeLocation: currentNode.startIndex,
+                                macroName: idText,
+                                macroLabel: macroName,
+                                macroValue: mv
+                            };
+                            report.userDefinitions.userDefinedMacros.set(idText, udm);
                         }
                     }
                 }
@@ -806,11 +807,11 @@ export function iterateTree(tree: Tree, macros: any): TreeReport {
     return report;
 }
 
-function findScope(node: Node, udt: Map<string, UserDefinedType>): Scope {
+export function findScope(node: Node, udt: Map<string, UserDefinedType>): Scope {
     let currentNode = node;
-    let currentKind = currentNode.type;
-    if (currentKind === "ERROR") { return { kind: "UNKNOWN" }; }
+    if (currentNode.type === "ERROR") { return { kind: "UNKNOWN" }; }
     while (true) {
+        const currentKind = currentNode.type;
         const parent = currentNode.parent;
         if (parent && parent.type === "opcode_statement") {
             if (isValidNotDefinedArg(parent, udt)) {
@@ -1100,16 +1101,19 @@ function updateVarUse(node: Node, udv: Map<string, UserDefinedVariable>, noDefAr
                 if (pkind === "label_statement") { variable.references = []; }
                 variable.isUndefined = false;
                 variable.nodeLocation = node.startIndex;
+                variable.definitionLocation ??= node.startIndex;
                 break;
             case AccessVariableType.withoutDefinition:
                 variable.isUndefined = false;
                 variable.isUnused = false;
                 variable.nodeLocation = node.startIndex;
+                variable.definitionLocation ??= node.startIndex;
                 break;
             case AccessVariableType.update:
                 variable.isUnused = false;
                 if (variable.isUndefined) { variable.references.push(nodeRange); }
                 variable.isUndefined = false;
+                variable.definitionLocation ??= node.startIndex;
                 break;
         }
     } else {
@@ -1174,7 +1178,7 @@ function getAccessType(node: Node, udt: Map<string, UserDefinedType>): AccessVar
             const outNode = parent.childForFieldName("outputs");
             if (outNode) {
                 if (outNode.type === "identifier" && outNode.id === currentNode.id) {
-                    return AccessVariableType.read;
+                    return AccessVariableType.write;
                 }
             }
         }
@@ -1245,6 +1249,7 @@ function addUserDefinedVar(node: Node, key: string, udef: UserDefinitions, macro
     if (!isFound) {
         let udv: UserDefinedVariable = {
             nodeLocation: node.startIndex,
+            definitionLocation: undefined,
             varName: key,
             varScope: preferredScope,
             varCalls: 1,
@@ -1262,11 +1267,13 @@ function addUserDefinedVar(node: Node, key: string, udef: UserDefinitions, macro
                 dataShape: { kind: "EXPRESSION" },
                 isArray: false
             };
+            udv.definitionLocation = node.startIndex;
             udef.userDefinedGlobalVars.set(key, udv);
         } else {
             const isWrite = accessMode === AccessVariableType.write;
             udv.isUndefined = !isWrite;
             udv.isUnused = isWrite;
+            if (isWrite) { udv.definitionLocation = node.startIndex; }
             const nodeToCheck = isGlobalSyntax && node.parent ? node.parent : node;
             udv.dataType = getVariableDataType(nodeToCheck, udef.userDefinedTypes);
             if (!isWrite) {

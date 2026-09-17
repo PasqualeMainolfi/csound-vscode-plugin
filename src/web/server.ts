@@ -4,7 +4,8 @@
 import { DiagnosticSeverity, DiagnosticTag, TextDocumentSyncKind } from 'vscode-languageserver';
 import { TextDocument, TextEdit } from 'vscode-languageserver-textdocument';
 import { Parser, Language, Query, Point, Node } from 'web-tree-sitter';
-import { updateTree, DocState, GError, isValidType, iterateTree, parseUdoFile, TreeReport } from './parser';
+import { updateTree, DocState, GError, GenericError, isValidType, iterateTree, parseUdoFile } from './parser';
+import { complete } from './completion';
 import {
     SEMANTIC_TOKEN_TYPE,
     getSemanticTokens,
@@ -23,10 +24,8 @@ import {
     InitializeResult,
     Hover,
     CompletionItem,
-    CompletionItemKind,
     SemanticTokensBuilder,
     DocumentFormattingParams,
-    InsertTextFormat,
     Diagnostic
 } from 'vscode-languageserver/browser';
 
@@ -51,8 +50,6 @@ let jsonFlags: Map<string, any>;
 let jsonMacros: Map<string, any>;
 
 let injectedLanguages: Record<string, { parser: Parser, query: Query }> = {};
-
-let diagnosticReport: TreeReport;
 
 function base64ToUint8Array(base64: string | undefined): Uint8Array {
     if (!base64) {
@@ -94,7 +91,8 @@ function nodeDiagnostic(
 }
 
 function pushDiagnostic(diagnostics: Diagnostic[], cachedDiagnostics: Set<string>, diagnostic: Diagnostic) {
-    const diagKey = `${diagnostic.range.start.line}-${diagnostic.range.end.character}-${diagnostic.message}`;
+    const { start, end } = diagnostic.range;
+    const diagKey = `${start.line}:${start.character}-${end.line}:${end.character}-${diagnostic.message}`;
     if (!cachedDiagnostics.has(diagKey)) {
         cachedDiagnostics.add(diagKey);
         diagnostics.push(diagnostic);
@@ -105,8 +103,9 @@ function isKnownFlag(flag: string): boolean {
     for (const data of jsonFlags.values()) {
         const prefixes = String(data["prefix"] ?? "").split(",");
         for (const prefix of prefixes) {
+            // "--env:NAME=VAL", "--devices[=in|out]", "-H#": keep only the flag name
             const normalized = prefix
-                .split(/[=\s]/)
+                .split(/[=\s:\[#]/)
                 [0]
                 ?.trim();
             if (normalized === flag) { return true; }
@@ -115,8 +114,8 @@ function isKnownFlag(flag: string): boolean {
     return false;
 }
 
-function genericErrorMessage(errorType: GError, nodeText: string): { message: string, expandToLine: boolean } {
-    switch (errorType) {
+function genericErrorMessage(genericError: GenericError, nodeText: string): { message: string, expandToLine: boolean } {
+    switch (genericError.errorType) {
         case GError.syntax:
             return { message: `Syntax error: <${nodeText}>`, expandToLine: false };
         case GError.explicitType:
@@ -135,6 +134,12 @@ function genericErrorMessage(errorType: GError, nodeText: string): { message: st
             return {
                 message: "It is not possible to have a Cabbage and a Cabbage ARA block in the same .csd file",
                 expandToLine: true
+            };
+        case GError.missing:
+            const kind = genericError.node.type;
+            return {
+                message: genericError.node.isNamed ? `Missing ${kind}` : `Missing "${kind}"`,
+                expandToLine: false
             };
     }
 }
@@ -234,201 +239,222 @@ documents.onDidClose(params => {
     docs.delete(params.document.uri);
 });
 
-documents.onDidChangeContent(async (change) => {
-    updateTree(parser, change.document, docs);
-    let doc = docs.get(change.document.uri);
+// Analyses the current version of a document and publishes its diagnostics.
+function validateDocument(uri: string) {
+    const doc = docs.get(uri);
+    if (!doc || !doc.tree) { return; }
+
     let diagnostics: Diagnostic[] = [];
     let cachedDiagnostics: Set<string> = new Set<string>();
-    if (doc) {
-        diagnosticReport = iterateTree(doc.tree!, jsonMacros);
-        doc.cachedTypedVars = diagnosticReport.typedVars;
-        doc.userDefinitions = diagnosticReport.userDefinitions;
 
-        for (const [flag, flagNode] of diagnosticReport.flags.entries()) {
-            if (!isKnownFlag(flag)) {
-                pushDiagnostic(
-                    diagnostics,
-                    cachedDiagnostics,
-                    nodeDiagnostic(flagNode, DiagnosticSeverity.Error, `Unknown flag type: <${flag}>`)
-                );
-            }
-        }
+    const diagnosticReport = iterateTree(doc.tree, jsonMacros);
+    doc.cachedTypedVars = diagnosticReport.typedVars;
+    doc.userDefinitions = diagnosticReport.userDefinitions;
+    doc.includedUdoFiles = diagnosticReport.includedUdoFiles;
 
-        for (const opcodeNode of diagnosticReport.opcodes) {
-            const opcodeText = getCleanNodeText(opcodeNode.text);
-            const opcodeType = opcodeText.split(":")[0] ?? opcodeText;
-            const isIncludedUdo = Array
-                .from(doc.cachedIncludedUdoFiles.values())
-                .some(udoFile => udoFile.udoList.has(opcodeType));
-            const isKnownOpcode = (
-                diagnosticReport.udo.has(opcodeType) ||
-                diagnosticReport.udt.has(opcodeType) ||
-                doc.userDefinitions.userDefinedOpcodes.has(opcodeType) ||
-                jsonOpcodes.has(opcodeText) ||
-                jsonOpcodes.has(opcodeType) ||
-                !!opcodeFromManual[opcodeType] ||
-                isIncludedUdo
-            );
-
-            if (!isKnownOpcode) {
-                pushDiagnostic(
-                    diagnostics,
-                    cachedDiagnostics,
-                    nodeDiagnostic(opcodeNode, DiagnosticSeverity.Error, `Unknown opcode: <${opcodeType}>`)
-                );
-            }
-        }
-
-        for (const typeNode of diagnosticReport.types) {
-            const typeIdentifier = getCleanNodeText(typeNode.text);
-            const isTypeIncluded = Array
-                .from(doc.cachedIncludedUdoFiles.values())
-                .some(udoFile => udoFile.typeList.has(typeIdentifier));
-            if (!isValidType(typeIdentifier) && !diagnosticReport.udt.has(typeIdentifier) && !isTypeIncluded) {
-                pushDiagnostic(
-                    diagnostics,
-                    cachedDiagnostics,
-                    nodeDiagnostic(typeNode, DiagnosticSeverity.Error, `Unknown type identifier: <${typeIdentifier}>`)
-                );
-            }
-        }
-
-        for (const genericError of diagnosticReport.genericErrors) {
-            const nodeText = getCleanNodeText(genericError.node.text);
-            const error = genericErrorMessage(genericError.errorType, nodeText);
+    for (const [flag, flagNode] of diagnosticReport.flags.entries()) {
+        if (!isKnownFlag(flag)) {
             pushDiagnostic(
                 diagnostics,
                 cachedDiagnostics,
-                nodeDiagnostic(
-                    genericError.node,
-                    DiagnosticSeverity.Error,
-                    error.message,
-                    [],
-                    error.expandToLine,
-                    doc.textLines
-                )
+                nodeDiagnostic(flagNode, DiagnosticSeverity.Error, `Unknown flag type: <${flag}>`)
             );
         }
+    }
 
-        for (const varRef of doc.userDefinitions.userUnusedVars) {
-            const findedNode = doc
-                .tree!
-                .rootNode
-                .descendantForIndex(varRef.nodeLocation, varRef.nodeLocation);
+    for (const opcodeNode of diagnosticReport.opcodes) {
+        const opcodeText = getCleanNodeText(opcodeNode.text);
+        const opcodeType = opcodeText.split(":")[0] ?? opcodeText;
+        const isIncludedUdo = Array
+            .from(doc.cachedIncludedUdoFiles.values())
+            .some(udoFile => udoFile.udoList.has(opcodeType));
+        const isKnownOpcode = (
+            diagnosticReport.udo.has(opcodeType) ||
+            diagnosticReport.udt.has(opcodeType) ||
+            doc.userDefinitions.userDefinedOpcodes.has(opcodeType) ||
+            jsonOpcodes.has(opcodeText) ||
+            jsonOpcodes.has(opcodeType) ||
+            !!opcodeFromManual[opcodeType] ||
+            isIncludedUdo
+        );
 
-            if (!findedNode) { continue; }
+        if (!isKnownOpcode) {
+            pushDiagnostic(
+                diagnostics,
+                cachedDiagnostics,
+                nodeDiagnostic(opcodeNode, DiagnosticSeverity.Error, `Unknown opcode: <${opcodeType}>`)
+            );
+        }
+    }
 
-            const pKind = findedNode.parent?.type || "";
-            const currentDiagnostic: Diagnostic = {
-                range: {
-                    start: {
-                        line: findedNode.startPosition.row,
-                        character: findedNode.startPosition.column
-                    },
-                    end: {
-                        line: findedNode.endPosition.row,
-                        character: findedNode.endPosition.column
-                    }
+    for (const typeNode of diagnosticReport.types) {
+        const typeIdentifier = getCleanNodeText(typeNode.text);
+        const isTypeIncluded = Array
+            .from(doc.cachedIncludedUdoFiles.values())
+            .some(udoFile => udoFile.typeList.has(typeIdentifier));
+        if (!isValidType(typeIdentifier) && !diagnosticReport.udt.has(typeIdentifier) && !isTypeIncluded) {
+            pushDiagnostic(
+                diagnostics,
+                cachedDiagnostics,
+                nodeDiagnostic(typeNode, DiagnosticSeverity.Error, `Unknown type identifier: <${typeIdentifier}>`)
+            );
+        }
+    }
+
+    for (const genericError of diagnosticReport.genericErrors) {
+        const nodeText = getCleanNodeText(genericError.node.text);
+        const error = genericErrorMessage(genericError, nodeText);
+        pushDiagnostic(
+            diagnostics,
+            cachedDiagnostics,
+            nodeDiagnostic(
+                genericError.node,
+                DiagnosticSeverity.Error,
+                error.message,
+                [],
+                error.expandToLine,
+                doc.textLines
+            )
+        );
+    }
+
+    for (const varRef of doc.userDefinitions.userUnusedVars) {
+        const findedNode = doc
+            .tree!
+            .rootNode
+            .descendantForIndex(varRef.nodeLocation, varRef.nodeLocation);
+
+        if (!findedNode) { continue; }
+
+        const pKind = findedNode.parent?.type || "";
+        const currentDiagnostic: Diagnostic = {
+            range: {
+                start: {
+                    line: findedNode.startPosition.row,
+                    character: findedNode.startPosition.column
                 },
-                severity: DiagnosticSeverity.Hint,
-                source: "csound-lsp",
-                message: getUnusedLabelFromKind(pKind),
-                tags: [DiagnosticTag.Unnecessary]
-            };
-
-            pushDiagnostic(diagnostics, cachedDiagnostics, currentDiagnostic);
+                end: {
+                    line: findedNode.endPosition.row,
+                    character: findedNode.endPosition.column
+                }
+            },
+            severity: DiagnosticSeverity.Hint,
+            source: "csound-lsp",
+            message: getUnusedLabelFromKind(pKind),
+            tags: [DiagnosticTag.Unnecessary]
         };
 
-        for (const varRef of doc.userDefinitions.userUndefinedVars) {
-            const findedNode = doc
-                .tree!
-                .rootNode
-                .descendantForIndex(varRef.nodeLocation, varRef.nodeLocation);
+        pushDiagnostic(diagnostics, cachedDiagnostics, currentDiagnostic);
+    };
 
-            if (!findedNode) { continue; }
+    for (const varRef of doc.userDefinitions.userUndefinedVars) {
+        const findedNode = doc
+            .tree!
+            .rootNode
+            .descendantForIndex(varRef.nodeLocation, varRef.nodeLocation);
 
-            const pKind = findedNode.parent?.type || "";
-            for (const nodeRange of varRef.references) {
-                let pflag = pKind === "macro_usage"; // need to check if var is in udo file
-                if (!pflag) {
-                    const currentDiagnostic: Diagnostic = {
-                        range: {
-                            start: {
-                                line: nodeRange.startPosition.row,
-                                character: nodeRange.startPosition.column
-                            },
-                            end: {
-                                line: nodeRange.endPosition.row,
-                                character: nodeRange.endPosition.column
-                            }
+        if (!findedNode) { continue; }
+
+        const pKind = findedNode.parent?.type || "";
+        for (const nodeRange of varRef.references) {
+            // macros defined in included .udo files are not undefined
+            const pflag = pKind === "macro_usage" && Array
+                .from(doc.cachedIncludedUdoFiles.values())
+                .some(udoFile => udoFile.macroList.has(varRef.varName));
+            if (!pflag) {
+                const currentDiagnostic: Diagnostic = {
+                    range: {
+                        start: {
+                            line: nodeRange.startPosition.row,
+                            character: nodeRange.startPosition.column
                         },
-                        severity: DiagnosticSeverity.Error,
-                        source: "csound-lsp",
-                        message: getUndefinedLabelFromKind(pKind),
-                        tags: []
-                    };
+                        end: {
+                            line: nodeRange.endPosition.row,
+                            character: nodeRange.endPosition.column
+                        }
+                    },
+                    severity: DiagnosticSeverity.Error,
+                    source: "csound-lsp",
+                    message: getUndefinedLabelFromKind(pKind),
+                    tags: []
+                };
 
-                    pushDiagnostic(diagnostics, cachedDiagnostics, currentDiagnostic);
-                }
+                pushDiagnostic(diagnostics, cachedDiagnostics, currentDiagnostic);
             }
         }
     }
 
     connection.sendDiagnostics({
-        uri: change.document.uri,
+        uri: uri,
         diagnostics: diagnostics
     });
+}
 
-});
+// Reads the included .udo files through the client. With `onlyNew`, only files that
+// were never read are requested. Returns true when the known definitions changed.
+async function resolveIncludedUdoFiles(uri: string, onlyNew: boolean): Promise<boolean> {
+    const doc = docs.get(uri);
+    if (!doc) { return false; }
 
-documents.onDidSave(async (change) => {
-    let doc = docs.get(change.document.uri);
-    if (doc) {
-        for (const [udoFilePath, udoFileCaptured] of diagnosticReport.includedUdoFiles.entries()) { // move in onSave
-            let pflag = false;
-            try {
-                const result = await connection.sendRequest<ResolveIncludedUdoResult>("csound-lsp/resolveIncludedUdo", {
-                    documentPath: change.document.uri,
-                    udoPath: udoFilePath
-                });
+    let changed = false;
+    for (const [udoFilePath, udoFileCaptured] of doc.includedUdoFiles.entries()) {
+        const cached = doc.cachedIncludedUdoFiles.get(udoFilePath);
+        if (onlyNew && (cached || doc.unresolvedUdoFiles.has(udoFilePath))) { continue; }
 
-                if (result && result.content) {
-                    let udoFile = doc.cachedIncludedUdoFiles.get(udoFilePath);
-                    if (udoFile && udoFile.contentHash !== result.contentHash) {
-                        udoFile.content = result.content;
-                        udoFile.contentHash = result.contentHash;
-                        pflag = true;
-                    } else {
-                        udoFileCaptured.content = result.content;
-                        udoFileCaptured.contentHash = result.contentHash;
-                        udoFileCaptured.fileName = result.pathBaseName;
-                        doc.cachedIncludedUdoFiles.set(udoFilePath, udoFileCaptured);
-                        pflag = true;
-                    }
-                };
+        try {
+            const result = await connection.sendRequest<ResolveIncludedUdoResult | undefined>("csound-lsp/resolveIncludedUdo", {
+                documentPath: uri,
+                udoPath: udoFilePath
+            });
 
-                if (pflag) {
-                    let cachedUdoFile = doc.cachedIncludedUdoFiles.get(udoFilePath);
-                    if (cachedUdoFile) {
-                        parseUdoFile(cachedUdoFile, parser);
-                    } else {
-                        connection.console.warn("Something went wrong while parsing .udo file...");
-                    }
-                }
-
-            } catch (err) {
-                connection.console.warn(`Something went wrong in resolve .udo file: ${err}`);
+            if (!result || result.content === undefined) {
+                doc.unresolvedUdoFiles.add(udoFilePath);
+                continue;
             }
-        }
+            doc.unresolvedUdoFiles.delete(udoFilePath);
+            if (cached && cached.contentHash === result.contentHash) { continue; }
 
-        const udoToRemoveFromCache = Array.from(doc.cachedIncludedUdoFiles.keys())
-            .filter(k => !diagnosticReport.includedUdoFiles.has(k));
-
-        for (const udoToRemoveKey of udoToRemoveFromCache) {
-            doc.cachedIncludedUdoFiles.delete(udoToRemoveKey);
+            const udoFile = cached ?? udoFileCaptured;
+            udoFile.content = result.content;
+            udoFile.contentHash = result.contentHash;
+            udoFile.fileName = result.pathBaseName;
+            parseUdoFile(udoFile, parser);
+            doc.cachedIncludedUdoFiles.set(udoFilePath, udoFile);
+            changed = true;
+        } catch (err) {
+            connection.console.warn(`Something went wrong in resolve .udo file: ${err}`);
         }
     }
 
+    // the document may have changed while the files were read
+    const current = docs.get(uri) ?? doc;
+    for (const cachedPath of Array.from(current.cachedIncludedUdoFiles.keys())) {
+        if (!current.includedUdoFiles.has(cachedPath)) {
+            current.cachedIncludedUdoFiles.delete(cachedPath);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+documents.onDidChangeContent(async (change) => {
+    const uri = change.document.uri;
+    updateTree(parser, change.document, docs);
+    validateDocument(uri);
+    if (await resolveIncludedUdoFiles(uri, true)) {
+        validateDocument(uri);
+    }
+});
+
+documents.onDidSave(async (change) => {
+    const uri = change.document.uri;
+    const doc = docs.get(uri);
+    if (!doc) { return; }
+    // included files may have been edited meanwhile: read them all again
+    doc.unresolvedUdoFiles.clear();
+    if (await resolveIncludedUdoFiles(uri, false)) {
+        validateDocument(uri);
+    }
 });
 
 connection.onHover(({ textDocument, position }): Hover | null => {
@@ -523,168 +549,18 @@ connection.onHover(({ textDocument, position }): Hover | null => {
     }
 });
 
-connection.onCompletion(({ textDocument, position }): CompletionItem[] => {
-    let items: CompletionItem[] = [];
-    const docState = docs.get(textDocument.uri);
-    if (!docState || !docState.tree) { return items; }
+connection.onCompletion(({ textDocument, position, context }): CompletionItem[] => {
+    const doc = docs.get(textDocument.uri);
+    if (!doc) { return []; }
 
-    const rootNode = docState.tree?.rootNode;
-    const nodePos: Point = { row: position.line, column: position.character - 1};
-    const nodeAtPos = rootNode.descendantForPosition(nodePos, nodePos);
-
-    if (!nodeAtPos) { return items; }
-
-    const nodeKind = nodeAtPos.type;
-    const findedNodeText = nodeAtPos.text;
-
-    switch (nodeKind) {
-        case "label_statement":
-        case ":":
-            const types = [
-                "a", "i", "k", "b", "S", "f", "w",
-                "InstrDef", "Instr", "Opcode", "OpcodeDef", "Complex"
-            ];
-            for (const ty of types) {
-                items.push({
-                    label: ty,
-                    kind: CompletionItemKind.Field,
-                    insertText: ty,
-                    documentation: `Data type ${ty}`
-                });
-            }
-            for (const udoFile of docState.cachedIncludedUdoFiles.values()) {
-                for (const udtName of udoFile.typeList) {
-                    const structDoc = `Data type ${udtName} (from ${udoFile.fileName})`;
-                    items.push({
-                        label: udtName,
-                        kind: CompletionItemKind.Field,
-                        detail: udtName,
-                        insertText: udtName,
-                        documentation: structDoc
-                    });
-                }
-            }
-            return items;
-        case "$":
-            for (const [key, data] of jsonMacros) {
-                items.push({
-                    label: key,
-                    kind: CompletionItemKind.Field,
-                    insertText: key,
-                    detail: `Value: ${data["value"]}`,
-                    documentation: `Equivalent to: ${data["equivalent_to"]}`
-                });
-            }
-            for (const udoFile of docState.cachedIncludedUdoFiles.values()) {
-                for (const includedMacro of udoFile.userDefinedMacros.values()) {
-                    const macroDoc = `User-Defined macro (from ${udoFile.fileName})`;
-                    items.push({
-                        label: includedMacro.macroLabel,
-                        kind: CompletionItemKind.Field,
-                        detail: `# ${includedMacro.macroValue} #`,
-                        insertText: includedMacro.macroName,
-                        documentation: macroDoc
-                    });
-                }
-            }
-            for (const userMacro of docState.userDefinitions.userDefinedMacros.values()) {
-                items.push({
-                    label: userMacro.macroLabel,
-                    kind: CompletionItemKind.Field,
-                    detail: `# ${userMacro.macroValue} #`,
-                    insertText: userMacro.macroName,
-                    documentation: "User-Defined macro"
-                });
-            }
-            return items;
-        case "flag_identifier":
-            for (const [key, data] of jsonFlags) {
-                const rawBody = data["body"];
-                const dataBody = Array.isArray(rawBody) ? rawBody.join('\n') : rawBody;
-                const sliceBody = dataBody.replace(/^--/, "");
-                items.push({
-                    label: key,
-                    kind: CompletionItemKind.Field,
-                    insertText: sliceBody,
-                    documentation: {
-                        kind: "markdown",
-                        value: data["description"]
-                    }
-                });
-            }
-            return items;
-        default:
-            const nodeParent = nodeAtPos.parent;
-            const pKind = nodeParent?.type ?? "";
-
-            switch (pKind) {
-                case "struct_access":
-                    const childStruct = nodeParent?.childForFieldName("called_struct");
-                    if (childStruct) {
-                        const sName = getCleanNodeText(childStruct.text);
-                        if (sName.length > 0) {
-                            const structTypeName = docState.cachedTypedVars.get(sName) ?? "";
-                            const members = docState.userDefinitions.userDefinedTypes.get(structTypeName)?.udtMembers;
-                            if (members) {
-                                for (const member of members) {
-                                    const structDoc = `Field od struct ${sName} (Type: ${structTypeName})`;
-                                    items.push({
-                                        label: member.name,
-                                        kind: CompletionItemKind.Field,
-                                        detail: `: ${member.type}`,
-                                        insertText: member.name,
-                                        documentation: structDoc
-                                    });
-                                }
-                            }
-
-                            for (const udoFile of docState.cachedIncludedUdoFiles.values()) {
-                                const udt = udoFile.userDefinedTypes.get(structTypeName);
-                                const members = udt?.udtMembers;
-                                if (members) {
-                                    for (const member of members) {
-                                        const structDoc = `Field od struct ${sName} (Type: ${structTypeName}) (from ${udoFile.path})`;
-                                        items.push({
-                                            label: member.name,
-                                            kind: CompletionItemKind.Field,
-                                            detail: `: ${member.type}`,
-                                            insertText: member.name,
-                                            documentation: structDoc
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return items;
-                default:
-                    if (
-                        pKind !== "flag_content" && pKind !== "struct_access" &&
-                        pKind !== "modern_udo_inputs" && pKind !== "ERROR" &&
-                        nodeAtPos.type !== "legacy_udo_args"
-                    ) {
-                        for (const [key, data] of jsonOpcodes) {
-                            if (key.startsWith(findedNodeText)) {
-                                const rawBody = data["body"];
-                                const dataBody: string = Array.isArray(rawBody) ? rawBody.join('\n') : rawBody;
-                                const isSnip: boolean = dataBody.includes("$");
-                                items.push({
-                                    label: data["prefix"],
-                                    kind: isSnip
-                                        ? CompletionItemKind.Snippet
-                                        : CompletionItemKind.Function,
-                                    insertText: dataBody,
-                                    insertTextFormat: isSnip
-                                        ? InsertTextFormat.Snippet
-                                        : InsertTextFormat.PlainText,
-                                    documentation: data["description"]
-                                });
-                            }
-                        }
-                    }
-                }
-                return items;
-    }
+    const items = complete({
+        uri: textDocument.uri,
+        doc: doc,
+        opcodes: jsonOpcodes,
+        flags: jsonFlags,
+        macros: jsonMacros
+    }, position, context?.triggerKind);
+    return items ?? [];
 });
 
 connection.languages.semanticTokens.on((params) => {
@@ -704,8 +580,13 @@ connection.languages.semanticTokens.on((params) => {
         return a.char - b.char;
     });
 
+    let lastLine = -1;
+    let lastEnd = 0;
     for (const token of sortedTokens) {
+        if (token.line === lastLine && token.char < lastEnd) { continue; }
         tokenBuilder.push(token.line, token.char, token.length, token.index, token.modifier);
+        lastLine = token.line;
+        lastEnd = token.char + token.length;
     };
 
     return tokenBuilder.build();
